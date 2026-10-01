@@ -34,9 +34,3 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, msg st
 		Details:   details,
 	}})
 }
-
-// requestID returns the id assigned by the request-id middleware.
-// Until KAN-29 lands it falls back to the inbound header, if any.
-func requestID(r *http.Request) string {
-	return r.Header.Get("X-Request-Id")
-}

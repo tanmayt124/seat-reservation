@@ -21,6 +21,8 @@ type Deps struct {
 	EnableTokenEndpoint bool
 	// DefaultPerUserLimit applies to shows created without per_user_limit.
 	DefaultPerUserLimit int
+	// Ready backs /readyz. Nil means always ready (tests).
+	Ready ReadyFunc
 }
 
 type handlers struct {
@@ -41,6 +43,7 @@ func NewRouter(d Deps) http.Handler {
 	h := &handlers{log: d.Logger, auth: d.Auth, shows: d.Shows, reserve: d.Reserve, defaultLimit: d.DefaultPerUserLimit}
 
 	r := chi.NewRouter()
+	r.Use(withRequestID, accessLog(d.Logger), recoverPanics(d.Logger))
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "not_found", "route not found", nil)
@@ -49,11 +52,13 @@ func NewRouter(d Deps) http.Handler {
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed on this route", nil)
 	})
 
-	// Liveness only: the process is up and serving. Readiness with a DB
-	// check is /readyz (KAN-27).
+	// Liveness: the process is up and serving. No dependencies are checked,
+	// so a slow database never gets the instance restarted.
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	// Readiness: the database answers and migrations are applied. Fails closed.
+	r.Get("/readyz", readyz(d.Ready))
 
 	if d.EnableTokenEndpoint && d.Auth != nil {
 		r.Post("/auth/token", h.issueTestToken)

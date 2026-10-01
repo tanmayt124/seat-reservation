@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -55,6 +56,17 @@ func run() error {
 		logger.Warn("POST /auth/token is enabled: test helper, anyone can mint tokens")
 	}
 
+	// Readiness fails as soon as shutdown starts, so the platform stops
+	// routing new traffic here while in-flight requests drain.
+	var draining atomic.Bool
+	dbReady := store.ReadyCheck(pool, migrations.FS)
+	ready := func(ctx context.Context) error {
+		if draining.Load() {
+			return errors.New("shutting_down")
+		}
+		return dbReady(ctx)
+	}
+
 	reserveSvc := reserve.NewService(pool, logger)
 	reserveSvc.SetAcquireTimeout(cfg.DBAcquireTimeout)
 
@@ -67,6 +79,7 @@ func run() error {
 			Reserve:             reserveSvc,
 			EnableTokenEndpoint: cfg.EnableTokenEndpoint,
 			DefaultPerUserLimit: cfg.PerUserLimit,
+			Ready:               ready,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -89,6 +102,7 @@ func run() error {
 	case <-ctx.Done():
 	}
 
+	draining.Store(true)
 	logger.Info("shutdown signal received, draining", "timeout", cfg.ShutdownTimeout.String())
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()

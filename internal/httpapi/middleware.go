@@ -43,6 +43,7 @@ func authenticate(a *auth.Authenticator, log *slog.Logger, optional bool) func(h
 			noteSpoof(log, r, id, r.URL.Query().Get("user_id"), "query")
 			noteSpoof(log, r, id, r.Header.Get("X-User-Id"), "header")
 
+			recordIdentity(r, id)
 			next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
 		})
 	}
