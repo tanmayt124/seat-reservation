@@ -59,6 +59,7 @@ func NewRouter(d Deps) http.Handler {
 
 			r.Get("/shows/{showID}", h.getShow)
 			r.Post("/shows/{showID}/reservations", h.createReservation)
+			r.Delete("/reservations/{reservationID}", h.cancelReservation)
 
 			r.With(requireAdmin).Post("/shows", h.createShow)
 		})
