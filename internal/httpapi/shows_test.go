@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tanmayt124/seat-reservation/internal/auth"
+	"github.com/tanmayt124/seat-reservation/internal/reserve"
 	"github.com/tanmayt124/seat-reservation/internal/store"
 	"github.com/tanmayt124/seat-reservation/internal/testutil"
 	"github.com/tanmayt124/seat-reservation/migrations"
@@ -60,6 +61,7 @@ func newTestAPI(t *testing.T) *testAPI {
 			Logger:              slog.New(slog.NewJSONHandler(logs, nil)),
 			Auth:                a,
 			Shows:               store.NewShows(pool),
+			Reserve:             reserve.NewService(pool, 4, testutil.QuietLogger()),
 			EnableTokenEndpoint: true,
 		}),
 	}

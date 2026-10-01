@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/tanmayt124/seat-reservation/internal/auth"
+	"github.com/tanmayt124/seat-reservation/internal/reserve"
 	"github.com/tanmayt124/seat-reservation/internal/store"
 )
 
@@ -16,20 +17,22 @@ type Deps struct {
 	Logger              *slog.Logger
 	Auth                *auth.Authenticator
 	Shows               *store.Shows
+	Reserve             *reserve.Service
 	EnableTokenEndpoint bool
 }
 
 type handlers struct {
-	log   *slog.Logger
-	auth  *auth.Authenticator
-	shows *store.Shows
+	log     *slog.Logger
+	auth    *auth.Authenticator
+	shows   *store.Shows
+	reserve *reserve.Service
 }
 
 func NewRouter(d Deps) http.Handler {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	h := &handlers{log: d.Logger, auth: d.Auth, shows: d.Shows}
+	h := &handlers{log: d.Logger, auth: d.Auth, shows: d.Shows, reserve: d.Reserve}
 
 	r := chi.NewRouter()
 
@@ -55,6 +58,7 @@ func NewRouter(d Deps) http.Handler {
 			r.Use(authenticate(d.Auth, d.Logger))
 
 			r.Get("/shows/{showID}", h.getShow)
+			r.Post("/shows/{showID}/reservations", h.createReservation)
 
 			r.With(requireAdmin).Post("/shows", h.createShow)
 		})

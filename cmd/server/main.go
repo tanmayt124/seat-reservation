@@ -14,6 +14,7 @@ import (
 	"github.com/tanmayt124/seat-reservation/internal/auth"
 	"github.com/tanmayt124/seat-reservation/internal/config"
 	"github.com/tanmayt124/seat-reservation/internal/httpapi"
+	"github.com/tanmayt124/seat-reservation/internal/reserve"
 	"github.com/tanmayt124/seat-reservation/internal/store"
 	"github.com/tanmayt124/seat-reservation/migrations"
 )
@@ -60,6 +61,7 @@ func run() error {
 			Logger:              logger,
 			Auth:                auth.New(cfg.JWTSecret),
 			Shows:               store.NewShows(pool),
+			Reserve:             reserve.NewService(pool, cfg.PerUserLimit, logger),
 			EnableTokenEndpoint: cfg.EnableTokenEndpoint,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
