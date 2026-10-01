@@ -15,6 +15,7 @@ import (
 	"github.com/tanmayt124/seat-reservation/internal/auth"
 	"github.com/tanmayt124/seat-reservation/internal/config"
 	"github.com/tanmayt124/seat-reservation/internal/httpapi"
+	"github.com/tanmayt124/seat-reservation/internal/metrics"
 	"github.com/tanmayt124/seat-reservation/internal/reserve"
 	"github.com/tanmayt124/seat-reservation/internal/store"
 	"github.com/tanmayt124/seat-reservation/migrations"
@@ -80,6 +81,7 @@ func run() error {
 			EnableTokenEndpoint: cfg.EnableTokenEndpoint,
 			DefaultPerUserLimit: cfg.PerUserLimit,
 			Ready:               ready,
+			Metrics:             metrics.New(pool, logger),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

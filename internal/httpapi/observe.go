@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tanmayt124/seat-reservation/internal/auth"
+	"github.com/tanmayt124/seat-reservation/internal/metrics"
 )
 
 type requestIDKey struct{}
@@ -51,8 +52,9 @@ func requestID(r *http.Request) string {
 // them would bury the requests that matter.
 var quietPaths = map[string]bool{"/healthz": true, "/readyz": true, "/metrics": true}
 
-// accessLog writes one structured line per request after it completes.
-func accessLog(log *slog.Logger) func(http.Handler) http.Handler {
+// accessLog writes one structured line per request after it completes and
+// records the HTTP metrics. Probes and scrapes are neither logged nor counted.
+func accessLog(log *slog.Logger, m *metrics.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if quietPaths[r.URL.Path] {
@@ -70,6 +72,8 @@ func accessLog(log *slog.Logger) func(http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
+			elapsed := time.Since(start)
+			m.ObserveHTTP(routePattern(r), r.Method, status, elapsed)
 			level := slog.LevelInfo
 			if status >= 500 {
 				level = slog.LevelError
@@ -80,7 +84,7 @@ func accessLog(log *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("route", routePattern(r)),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", status),
-				slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
+				slog.Float64("duration_ms", float64(elapsed.Microseconds())/1000),
 				slog.Int("bytes", ww.BytesWritten()),
 				slog.String("user_id", holder.userID),
 			)

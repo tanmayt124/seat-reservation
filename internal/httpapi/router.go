@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/tanmayt124/seat-reservation/internal/auth"
+	"github.com/tanmayt124/seat-reservation/internal/metrics"
 	"github.com/tanmayt124/seat-reservation/internal/reserve"
 	"github.com/tanmayt124/seat-reservation/internal/store"
 )
@@ -23,6 +24,8 @@ type Deps struct {
 	DefaultPerUserLimit int
 	// Ready backs /readyz. Nil means always ready (tests).
 	Ready ReadyFunc
+	// Metrics backs /metrics and the outcome counters. Nil disables both.
+	Metrics *metrics.Metrics
 }
 
 type handlers struct {
@@ -31,6 +34,7 @@ type handlers struct {
 	shows        *store.Shows
 	reserve      *reserve.Service
 	defaultLimit int
+	m            *metrics.Metrics
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -40,10 +44,10 @@ func NewRouter(d Deps) http.Handler {
 	if d.DefaultPerUserLimit <= 0 {
 		d.DefaultPerUserLimit = 4
 	}
-	h := &handlers{log: d.Logger, auth: d.Auth, shows: d.Shows, reserve: d.Reserve, defaultLimit: d.DefaultPerUserLimit}
+	h := &handlers{log: d.Logger, auth: d.Auth, shows: d.Shows, reserve: d.Reserve, defaultLimit: d.DefaultPerUserLimit, m: d.Metrics}
 
 	r := chi.NewRouter()
-	r.Use(withRequestID, accessLog(d.Logger), recoverPanics(d.Logger))
+	r.Use(withRequestID, accessLog(d.Logger, d.Metrics), recoverPanics(d.Logger))
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "not_found", "route not found", nil)
@@ -59,6 +63,10 @@ func NewRouter(d Deps) http.Handler {
 	})
 	// Readiness: the database answers and migrations are applied. Fails closed.
 	r.Get("/readyz", readyz(d.Ready))
+	if d.Metrics != nil {
+		// Public on purpose: the brief asks for metrics access to watch the burst.
+		r.Method(http.MethodGet, "/metrics", d.Metrics.Handler())
+	}
 
 	if d.EnableTokenEndpoint && d.Auth != nil {
 		r.Post("/auth/token", h.issueTestToken)

@@ -63,6 +63,7 @@ func main() {
 	}
 	admin := c.mustToken(cfg.run+"-admin", "admin")
 
+	before, metricsOK := c.scrape()
 	start := time.Now()
 	results := []scenario{
 		hotSeat(c, cfg, admin),
@@ -71,7 +72,7 @@ func main() {
 		perUserLimit(c, cfg, admin),
 		cancelAndSpoof(c, cfg, admin),
 	}
-	results = append(results, metricsCheck(c))
+	results = append(results, metricsCheck(c, before, metricsOK))
 	elapsed := time.Since(start)
 
 	failed := report(c, results, elapsed)
@@ -313,18 +314,69 @@ func cancelAndSpoof(c *client, cfg config, admin string) scenario {
 	return s
 }
 
-// metricsCheck confirms /metrics is served. Detailed reconciliation against
-// the counters is added with the metrics story.
-func metricsCheck(c *client) scenario {
-	s := newScenario("Metrics endpoint")
-	x := c.do("GET", "/metrics", "", "", nil, false)
-	if x.status == http.StatusNotFound {
+// metricsCheck reconciles /metrics with what this run observed: counter
+// deltas against the outcomes we counted, and the per-show seat gauges
+// against the API. Deltas are exact only when this run is the only traffic;
+// more than expected is reported, fewer is a failure (metrics missed events).
+func metricsCheck(c *client, before map[string]float64, ok bool) scenario {
+	s := newScenario("Metrics reconcile with the API")
+	after, okAfter := c.scrape()
+	if !ok || !okAfter {
 		s.skipped = true
-		s.notes = append(s.notes, "skip /metrics not served yet")
+		s.notes = append(s.notes, "skip /metrics not served")
 		return s
 	}
-	s.check(x.status == http.StatusOK, "/metrics -> %d", x.status)
+	st := c.stats.snapshot()
+	pairs := []struct{ metric, outcome string }{
+		{"reservations_confirmed_total", "confirmed"},
+		{`reservations_declined_total{reason="seat_taken"}`, "seat_taken"},
+		{`reservations_declined_total{reason="per_user_limit"}`, "per_user_limit_exceeded"},
+		{`reservations_declined_total{reason="idempotent_replay"}`, "idempotent_replay"},
+	}
+	for _, p := range pairs {
+		delta, want := int(after[p.metric]-before[p.metric]), st.outcomes[p.outcome]
+		note := ""
+		if delta > want {
+			note = " (other traffic on the server)"
+		}
+		s.check(delta >= want, "%s +%d, burst saw %d%s", p.metric, delta, want, note)
+	}
+
+	bad := 0
+	for _, id := range c.shows {
+		if after[`seats_invariant_ok{show_id="`+id+`"}`] != 1 {
+			bad++
+		}
+		d := c.mustShow("", id)
+		if int(after[`seats{show_id="`+id+`",status="confirmed"}`]) != d.Counts.Confirmed ||
+			int(after[`seats{show_id="`+id+`",status="available"}`]) != d.Counts.Available {
+			bad++
+		}
+	}
+	s.check(bad == 0, "seat gauges match GET /shows and seats_invariant_ok=1 for all %d shows of this run", len(c.shows))
 	return s
+}
+
+// scrape reads /metrics into "name{labels}" -> value.
+func (c *client) scrape() (map[string]float64, bool) {
+	x := c.do("GET", "/metrics", "", "", nil, false)
+	if x.status != http.StatusOK {
+		return nil, false
+	}
+	out := map[string]float64{}
+	for _, line := range strings.Split(string(x.body), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		i := strings.LastIndexByte(line, ' ')
+		if i < 0 {
+			continue
+		}
+		if v, err := strconv.ParseFloat(line[i+1:], 64); err == nil {
+			out[line[:i]] = v
+		}
+	}
+	return out, true
 }
 
 // ---------- report ----------
@@ -421,6 +473,8 @@ type client struct {
 	cfg   config
 	http  *http.Client
 	stats *stats
+	mu    sync.Mutex
+	shows []string // shows created by this run
 }
 
 func newClient(cfg config) *client {
@@ -579,6 +633,9 @@ func (c *client) mustCreateShow(admin, name string, rows, perRow int) string {
 		fmt.Fprintf(os.Stderr, "create show: %d %s %v\n", x.status, x.body, x.err)
 		os.Exit(2)
 	}
+	c.mu.Lock()
+	c.shows = append(c.shows, v.ID)
+	c.mu.Unlock()
 	return v.ID
 }
 

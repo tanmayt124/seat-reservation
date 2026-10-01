@@ -43,6 +43,9 @@ func (h *handlers) cancelReservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !c.AlreadyCancelled {
+		h.m.Cancelled(c.SeatsReleased)
+	}
 	h.log.Info("reservation_cancelled", "request_id", requestID(r), "reservation_id", c.ReservationID,
 		"show_id", c.ShowID, "user_id", id.UserID, "seats_released", c.SeatsReleased,
 		"already_cancelled", c.AlreadyCancelled)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tanmayt124/seat-reservation/internal/auth"
+	"github.com/tanmayt124/seat-reservation/internal/metrics"
 	"github.com/tanmayt124/seat-reservation/internal/reserve"
 	"github.com/tanmayt124/seat-reservation/internal/store"
 	"github.com/tanmayt124/seat-reservation/internal/testutil"
@@ -64,6 +65,7 @@ func newTestAPI(t *testing.T) *testAPI {
 			Auth:                a,
 			Shows:               store.NewShows(pool),
 			Reserve:             svc,
+			Metrics:             metrics.New(pool, testutil.QuietLogger()),
 			EnableTokenEndpoint: true,
 		}),
 	}

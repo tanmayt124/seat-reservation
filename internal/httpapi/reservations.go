@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/tanmayt124/seat-reservation/internal/metrics"
 	"github.com/tanmayt124/seat-reservation/internal/reserve"
 )
 
@@ -31,11 +32,13 @@ type reserveRequest struct {
 func (h *handlers) createReservation(w http.ResponseWriter, r *http.Request) {
 	showID, ok := parseShowID(w, r)
 	if !ok {
+		h.m.Declined(metrics.DeclineValidation)
 		return
 	}
 
 	var body reserveRequest
 	if !decodeJSON(w, r, &body, defaultBodyLimit) {
+		h.m.Declined(metrics.DeclineValidation)
 		return
 	}
 	id := identity(r)
@@ -43,6 +46,7 @@ func (h *handlers) createReservation(w http.ResponseWriter, r *http.Request) {
 
 	key, ok := idempotencyKey(w, r, body.IdempotencyKey)
 	if !ok {
+		h.m.Declined(metrics.DeclineValidation)
 		return
 	}
 
@@ -55,6 +59,7 @@ func (h *handlers) createReservation(w http.ResponseWriter, r *http.Request) {
 		errs.add("seats", err.Error())
 	}
 	if errs.write(w, r) {
+		h.m.Declined(metrics.DeclineValidation)
 		return
 	}
 
@@ -65,6 +70,7 @@ func (h *handlers) createReservation(w http.ResponseWriter, r *http.Request) {
 		Seats:  seats,
 	})
 	if errors.Is(err, reserve.ErrOverloaded) {
+		h.m.Declined(metrics.DeclineOverloaded)
 		h.log.Warn("reservation_declined", "request_id", requestID(r), "reason", "overloaded",
 			"show_id", showID, "user_id", id.UserID)
 		w.Header().Set("Retry-After", "1")
@@ -80,10 +86,13 @@ func (h *handlers) createReservation(w http.ResponseWriter, r *http.Request) {
 		"seats", seats, "status", out.Status, "reason", out.Reason}
 	switch {
 	case out.Replayed:
+		h.m.Declined(metrics.DeclineIdempotentReplay)
 		h.log.Info("idempotent_replay", attrs...)
 	case out.Status == http.StatusCreated:
+		h.m.Confirmed(len(seats))
 		h.log.Info("reservation_confirmed", attrs...)
 	default:
+		h.m.Declined(metrics.DeclineReason(out.Reason))
 		h.log.Info("reservation_declined", attrs...)
 	}
 
