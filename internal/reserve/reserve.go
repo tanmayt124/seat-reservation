@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	acquireTimeout   = 2 * time.Second
-	lockTimeout      = "3s"
-	statementTimeout = "5s"
+	defaultAcquireTimeout = 2 * time.Second
+	lockTimeout           = "3s"
+	statementTimeout      = "5s"
 )
 
 // ErrOverloaded means no database connection was free in time. The caller
@@ -53,11 +53,19 @@ type Service struct {
 	pool  *pgxpool.Pool
 	limit int
 	log   *slog.Logger
+	// acquireTimeout bounds the wait for a pool connection. Past it the
+	// request is answered 429 instead of queueing further.
+	acquireTimeout time.Duration
 }
 
 func NewService(pool *pgxpool.Pool, perUserLimit int, log *slog.Logger) *Service {
-	return &Service{pool: pool, limit: perUserLimit, log: log}
+	return &Service{pool: pool, limit: perUserLimit, log: log, acquireTimeout: defaultAcquireTimeout}
 }
+
+// SetAcquireTimeout overrides the pool wait. Tests that assert exact counts
+// use a long one so a slow machine cannot turn a correctness test into a
+// load test.
+func (s *Service) SetAcquireTimeout(d time.Duration) { s.acquireTimeout = d }
 
 func (s *Service) Limit() int { return s.limit }
 
@@ -72,10 +80,15 @@ type Confirmed struct {
 
 // Reserve runs the whole flow:
 //
-//  1. Replay check (no locks): a finished (user, key) returns its stored response.
+//  1. Replay check (no locks): a key that already booked returns that booking.
 //  2. Fast pre-check (no locks): unknown seats -> 422, taken seats -> 409.
 //  3. Transaction: claim the key, per-user advisory lock + limit check,
 //     lock seats in label order, guarded update, store the response, commit.
+//
+// Only successful bookings are stored against the key. A rejection rolls the
+// transaction back and leaves nothing behind: nothing changed, so a retry
+// with the same key simply re-evaluates. This also keeps rejections off the
+// WAL, so a hot-seat storm costs one disk flush (the winner), not hundreds.
 //
 // Deadlocks and serialization failures are retried once.
 func (s *Service) Reserve(ctx context.Context, req Request) (Outcome, error) {
@@ -86,7 +99,7 @@ func (s *Service) Reserve(ctx context.Context, req Request) (Outcome, error) {
 
 	// The lock-free reads share one short deadline. Under burst, waiting
 	// longer for a pool connection only grows the queue; 429 is better.
-	pctx, cancel := context.WithTimeout(ctx, acquireTimeout+time.Second)
+	pctx, cancel := context.WithTimeout(ctx, s.acquireTimeout+time.Second)
 	defer cancel()
 	if out, done, err := s.lookupKey(pctx, req, hash); err != nil || done {
 		return out, err
@@ -217,12 +230,18 @@ func checkSeats(want []string, found map[string]string) (Outcome, bool) {
 	return Outcome{}, false
 }
 
+// rejection carries a 4xx outcome out of the transaction function so the
+// transaction rolls back instead of committing.
+type rejection struct{ out Outcome }
+
+func (r rejection) Error() string { return "rejected: " + r.out.Reason }
+
 // errDuplicateInFlight signals that another request with the same key won the
 // insert; the caller replays its stored response.
 var errDuplicateInFlight = errors.New("duplicate key in flight")
 
 func (s *Service) runTx(ctx context.Context, req Request, hash []byte) (Outcome, error) {
-	acqCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
+	acqCtx, cancel := context.WithTimeout(ctx, s.acquireTimeout)
 	conn, err := s.pool.Acquire(acqCtx)
 	cancel()
 	if err != nil {
@@ -239,6 +258,10 @@ func (s *Service) runTx(ctx context.Context, req Request, hash []byte) (Outcome,
 		out, err = s.reserveInTx(ctx, tx, req, hash)
 		return err
 	})
+	var rej rejection
+	if errors.As(err, &rej) {
+		return rej.out, nil
+	}
 
 	if errors.Is(err, errDuplicateInFlight) {
 		// The other request has committed by now (the insert waited for it).
@@ -296,10 +319,9 @@ func (s *Service) reserveInTx(ctx context.Context, tx pgx.Tx, req Request, hash 
 		return Outcome{}, err
 	}
 	if held+len(req.Seats) > s.limit {
-		out := errorOutcome(http.StatusUnprocessableEntity, "per_user_limit_exceeded",
+		return Outcome{}, rejection{errorOutcome(http.StatusUnprocessableEntity, "per_user_limit_exceeded",
 			fmt.Sprintf("at most %d seats per user for this show", s.limit),
-			map[string]any{"limit": s.limit, "current": held, "requested": len(req.Seats)})
-		return s.store(ctx, tx, req, out)
+			map[string]any{"limit": s.limit, "current": held, "requested": len(req.Seats)})}
 	}
 
 	// Lock the requested seats in label order. Every transaction locks in the
@@ -321,7 +343,7 @@ func (s *Service) reserveInTx(ctx context.Context, tx pgx.Tx, req Request, hash 
 		return Outcome{}, err
 	}
 	if out, bad := checkSeats(req.Seats, found); bad {
-		return s.store(ctx, tx, req, out)
+		return Outcome{}, rejection{out}
 	}
 
 	var c Confirmed

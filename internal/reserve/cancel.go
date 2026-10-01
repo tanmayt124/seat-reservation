@@ -34,7 +34,7 @@ type Cancelled struct {
 // seat that has since been booked by someone else. Cancelling twice returns
 // the same body.
 func (s *Service) Cancel(ctx context.Context, reservationID, userID string) (Cancelled, error) {
-	acqCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
+	acqCtx, cancel := context.WithTimeout(ctx, s.acquireTimeout)
 	conn, err := s.pool.Acquire(acqCtx)
 	cancel()
 	if err != nil {

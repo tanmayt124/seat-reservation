@@ -53,6 +53,8 @@ func newTestAPI(t *testing.T) *testAPI {
 	}
 	logs := &syncBuffer{}
 	a := auth.New(testSecret)
+	svc := reserve.NewService(pool, 4, testutil.QuietLogger())
+	svc.SetAcquireTimeout(30 * time.Second)
 	return &testAPI{
 		t:    t,
 		auth: a,
@@ -61,7 +63,7 @@ func newTestAPI(t *testing.T) *testAPI {
 			Logger:              slog.New(slog.NewJSONHandler(logs, nil)),
 			Auth:                a,
 			Shows:               store.NewShows(pool),
-			Reserve:             reserve.NewService(pool, 4, testutil.QuietLogger()),
+			Reserve:             svc,
 			EnableTokenEndpoint: true,
 		}),
 	}

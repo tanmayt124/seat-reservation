@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -38,7 +39,11 @@ func newFixture(t *testing.T, seats, limit int) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{t: t, pool: pool, svc: NewService(pool, limit, testutil.QuietLogger()), showID: show.ID}
+	svc := NewService(pool, limit, testutil.QuietLogger())
+	// Correctness tests assert exact counts, so a slow machine must not turn
+	// waits into 429s. Overload behaviour is covered by the burst script.
+	svc.SetAcquireTimeout(30 * time.Second)
+	return &fixture{t: t, pool: pool, svc: svc, showID: show.ID}
 }
 
 func (f *fixture) reserve(user, key string, seats ...string) Outcome {
@@ -274,9 +279,16 @@ func TestPerUserLimitAcrossRequests(t *testing.T) {
 	if o.Status != http.StatusUnprocessableEntity || code(o) != "per_user_limit_exceeded" {
 		t.Fatalf("second: %d %s", o.Status, o.Body)
 	}
-	// The 422 was decided in the transaction, so it is stored and replayed.
-	if again := f.reserve("alice", "k2", "A4", "A5"); !again.Replayed || again.Status != http.StatusUnprocessableEntity {
-		t.Fatalf("replay of 422: %d replayed=%v", again.Status, again.Replayed)
+	// Rejections are not stored: the same key is re-evaluated, not replayed.
+	if again := f.reserve("alice", "k2", "A4", "A5"); again.Replayed || again.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("retry of 422: %d replayed=%v", again.Status, again.Replayed)
+	}
+	var keys int
+	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM idempotency_keys WHERE key = 'k2'").Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if keys != 0 {
+		t.Fatalf("rejected request left %d key rows, want 0", keys)
 	}
 	if o := f.reserve("alice", "k3", "A4"); o.Status != http.StatusCreated {
 		t.Fatalf("fourth seat: %d %s", o.Status, o.Body)

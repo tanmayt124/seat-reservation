@@ -27,7 +27,7 @@ run: ## Run the server on the host using .env
 build: ## Build the server binary into bin/
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/server ./cmd/server
 
-TEST_DATABASE_URL ?= postgres://seats:seats@localhost:$${DB_PORT:-5432}/seats?sslmode=disable
+TEST_DATABASE_URL ?= postgres://seats:seats@127.0.0.1:$${DB_PORT:-5432}/seats?sslmode=disable
 
 test: ## Run all tests with the race detector (DB tests need `make up` first)
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" go test -race -count=1 ./...
