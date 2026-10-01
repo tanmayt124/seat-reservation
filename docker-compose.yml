@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: seats
+      POSTGRES_PASSWORD: seats
+      POSTGRES_DB: seats
+    # Headroom above the app pool so the burst script, psql and migrations
+    # can always get a connection.
+    command: ["postgres", "-c", "max_connections=200"]
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seats -d seats"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://seats:seats@db:5432/seats?sslmode=disable
+      # Local-only secret. Real deployments set their own via platform secrets.
+      JWT_SECRET: local-dev-only-secret-not-for-production-use
+      DB_MAX_CONNS: "16"
+      ADMISSION_LIMIT: "64"
+      PER_USER_LIMIT: "4"
+      LOG_LEVEL: info
+      ENABLE_TOKEN_ENDPOINT: "true"
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Longer than SHUTDOWN_TIMEOUT so in-flight requests can drain.
+    stop_grace_period: 25s
+
+volumes:
+  pgdata:

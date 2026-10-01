@@ -1,0 +1,9 @@
+.git
+.github
+bin
+.env
+*.md
+!README.md
+docs
+coverage*
+*.test
