@@ -1,0 +1,118 @@
+// Package config reads all runtime settings from environment variables.
+// Nothing is read from files; .env is only a convenience for `make run`.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type Config struct {
+	Port            string
+	DatabaseURL     string
+	JWTSecret       string
+	DBMaxConns      int32
+	AdmissionLimit  int
+	PerUserLimit    int
+	LogLevel        slog.Level
+	ShutdownTimeout time.Duration
+	// EnableTokenEndpoint exposes POST /auth/token so the burst script can mint
+	// test tokens. It is a test helper and is off unless set explicitly.
+	EnableTokenEndpoint bool
+}
+
+// Load reads the environment and returns every problem at once, so a bad
+// deploy fails with one clear message instead of a fix-one-rerun loop.
+func Load() (Config, error) {
+	var errs []error
+
+	cfg := Config{
+		Port:                getenv("PORT", "8080"),
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
+		JWTSecret:           os.Getenv("JWT_SECRET"),
+		EnableTokenEndpoint: getenv("ENABLE_TOKEN_ENDPOINT", "false") == "true",
+	}
+
+	if cfg.DatabaseURL == "" {
+		errs = append(errs, errors.New("DATABASE_URL is required"))
+	}
+	if len(cfg.JWTSecret) < 32 {
+		errs = append(errs, errors.New("JWT_SECRET is required and must be at least 32 characters"))
+	}
+
+	maxConns, err := intEnv("DB_MAX_CONNS", 16, 2, 200)
+	errs = appendErr(errs, err)
+	cfg.DBMaxConns = int32(maxConns)
+
+	cfg.AdmissionLimit, err = intEnv("ADMISSION_LIMIT", 64, 1, 10000)
+	errs = appendErr(errs, err)
+
+	cfg.PerUserLimit, err = intEnv("PER_USER_LIMIT", 4, 1, 100)
+	errs = appendErr(errs, err)
+
+	cfg.ShutdownTimeout, err = durationEnv("SHUTDOWN_TIMEOUT", 20*time.Second)
+	errs = appendErr(errs, err)
+
+	cfg.LogLevel, err = levelEnv("LOG_LEVEL", slog.LevelInfo)
+	errs = appendErr(errs, err)
+
+	if len(errs) > 0 {
+		return Config{}, fmt.Errorf("invalid configuration: %w", errors.Join(errs...))
+	}
+	return cfg, nil
+}
+
+func getenv(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return def
+}
+
+func intEnv(key string, def, min, max int) (int, error) {
+	raw := getenv(key, strconv.Itoa(def))
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def, fmt.Errorf("%s must be an integer, got %q", key, raw)
+	}
+	if n < min || n > max {
+		return def, fmt.Errorf("%s must be between %d and %d, got %d", key, min, max, n)
+	}
+	return n, nil
+}
+
+func durationEnv(key string, def time.Duration) (time.Duration, error) {
+	raw := getenv(key, def.String())
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return def, fmt.Errorf("%s must be a positive duration like 20s, got %q", key, raw)
+	}
+	return d, nil
+}
+
+func levelEnv(key string, def slog.Level) (slog.Level, error) {
+	raw := strings.ToLower(getenv(key, "info"))
+	switch raw {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return def, fmt.Errorf("%s must be debug, info, warn or error, got %q", key, raw)
+}
+
+func appendErr(errs []error, err error) []error {
+	if err != nil {
+		return append(errs, err)
+	}
+	return errs
+}
