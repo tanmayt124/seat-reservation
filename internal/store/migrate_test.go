@@ -3,64 +3,20 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
-	"log/slog"
-	"os"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tanmayt124/seat-reservation/internal/testutil"
 	"github.com/tanmayt124/seat-reservation/migrations"
 )
 
-// testPool connects to TEST_DATABASE_URL inside a throwaway schema, so tests
-// never touch real tables and can run in parallel. Skips when unset.
-func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping database test")
-	}
-	ctx := context.Background()
-	schema := fmt.Sprintf("t_%d", time.Now().UnixNano())
-
-	admin, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
-		t.Fatal(err)
-	}
-
-	pc, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pc.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(func() {
-		pool.Close()
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-		admin.Close()
-	})
-	return pool
-}
-
-func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
-
 func TestMigrateIsRepeatable(t *testing.T) {
-	pool := testPool(t)
+	pool := testutil.Pool(t)
 	ctx := context.Background()
 
 	for i := 0; i < 2; i++ {
-		if err := Migrate(ctx, pool, migrations.FS, quietLogger()); err != nil {
+		if err := Migrate(ctx, pool, migrations.FS, testutil.QuietLogger()); err != nil {
 			t.Fatalf("run %d: %v", i+1, err)
 		}
 	}
@@ -75,9 +31,9 @@ func TestMigrateIsRepeatable(t *testing.T) {
 }
 
 func TestSchemaRejectsImpossibleSeatStates(t *testing.T) {
-	pool := testPool(t)
+	pool := testutil.Pool(t)
 	ctx := context.Background()
-	if err := Migrate(ctx, pool, migrations.FS, quietLogger()); err != nil {
+	if err := Migrate(ctx, pool, migrations.FS, testutil.QuietLogger()); err != nil {
 		t.Fatal(err)
 	}
 

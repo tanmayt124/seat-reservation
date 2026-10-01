@@ -7,13 +7,30 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/tanmayt124/seat-reservation/internal/auth"
+	"github.com/tanmayt124/seat-reservation/internal/store"
 )
 
 type Deps struct {
-	Logger *slog.Logger
+	Logger              *slog.Logger
+	Auth                *auth.Authenticator
+	Shows               *store.Shows
+	EnableTokenEndpoint bool
+}
+
+type handlers struct {
+	log   *slog.Logger
+	auth  *auth.Authenticator
+	shows *store.Shows
 }
 
 func NewRouter(d Deps) http.Handler {
+	if d.Logger == nil {
+		d.Logger = slog.Default()
+	}
+	h := &handlers{log: d.Logger, auth: d.Auth, shows: d.Shows}
+
 	r := chi.NewRouter()
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
@@ -29,5 +46,26 @@ func NewRouter(d Deps) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	if d.EnableTokenEndpoint && d.Auth != nil {
+		r.Post("/auth/token", h.issueTestToken)
+	}
+
+	if d.Auth != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(authenticate(d.Auth, d.Logger))
+
+			r.Get("/shows/{showID}", h.getShow)
+
+			r.With(requireAdmin).Post("/shows", h.createShow)
+		})
+	}
+
 	return r
+}
+
+// internalError is for failures the client cannot fix. Contention and
+// overload are mapped to 4xx elsewhere (KAN-22) and never reach here.
+func (h *handlers) internalError(w http.ResponseWriter, r *http.Request, err error) {
+	h.log.Error("internal_error", "request_id", requestID(r), "path", r.URL.Path, "err", err)
+	writeError(w, r, http.StatusInternalServerError, "internal_error", "something went wrong", nil)
 }

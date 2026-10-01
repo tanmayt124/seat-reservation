@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tanmayt124/seat-reservation/internal/auth"
 	"github.com/tanmayt124/seat-reservation/internal/config"
 	"github.com/tanmayt124/seat-reservation/internal/httpapi"
 	"github.com/tanmayt124/seat-reservation/internal/store"
@@ -49,10 +50,18 @@ func run() error {
 	if err := store.Migrate(ctx, pool, migrations.FS, logger); err != nil {
 		return err
 	}
+	if cfg.EnableTokenEndpoint {
+		logger.Warn("POST /auth/token is enabled: test helper, anyone can mint tokens")
+	}
 
 	srv := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           httpapi.NewRouter(httpapi.Deps{Logger: logger}),
+		Addr: ":" + cfg.Port,
+		Handler: httpapi.NewRouter(httpapi.Deps{
+			Logger:              logger,
+			Auth:                auth.New(cfg.JWTSecret),
+			Shows:               store.NewShows(pool),
+			EnableTokenEndpoint: cfg.EnableTokenEndpoint,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
