@@ -29,7 +29,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Port != "8080" || cfg.PerUserLimit != 4 || cfg.DBMaxConns != 16 || cfg.EnableTokenEndpoint {
+	if cfg.Port != "8080" || cfg.PerUserLimit != 4 || cfg.DBMaxConns != 16 || cfg.EnableTokenEndpoint || cfg.AdmissionLimit != 0 {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }

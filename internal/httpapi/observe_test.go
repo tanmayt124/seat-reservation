@@ -110,3 +110,21 @@ func TestPanicBecomesLogged500(t *testing.T) {
 		t.Fatalf("panic not logged: %s", buf.String())
 	}
 }
+
+func TestClientGoneIsNot5xx(t *testing.T) {
+	h := &handlers{log: slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("POST", "/x", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.internalError(rec, req, context.Canceled)
+	if rec.Code != statusClientClosed {
+		t.Fatalf("cancelled request answered %d, want 499", rec.Code)
+	}
+	// A real failure on a live request is still a 500.
+	rec = httptest.NewRecorder()
+	h.internalError(rec, httptest.NewRequest("POST", "/x", nil), errors.New("boom"))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("live failure answered %d, want 500", rec.Code)
+	}
+}

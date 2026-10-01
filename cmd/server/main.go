@@ -82,6 +82,8 @@ func run() error {
 			DefaultPerUserLimit: cfg.PerUserLimit,
 			Ready:               ready,
 			Metrics:             metrics.New(pool, logger),
+			AdmissionLimit:      cfg.AdmissionLimit,
+			AdmissionWait:       cfg.AdmissionWait,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

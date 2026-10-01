@@ -13,11 +13,15 @@ import (
 )
 
 type Config struct {
-	Port            string
-	DatabaseURL     string
-	JWTSecret       string
-	DBMaxConns      int32
+	Port        string
+	DatabaseURL string
+	JWTSecret   string
+	DBMaxConns  int32
+	// AdmissionLimit caps in-flight write requests; 0 turns the limiter off.
+	// Off by default: shedding a hot-seat loser with 429 would break the
+	// "everyone else gets 409" rule, so bursts queue on the DB pool instead.
 	AdmissionLimit  int
+	AdmissionWait   time.Duration
 	PerUserLimit    int
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
@@ -52,7 +56,10 @@ func Load() (Config, error) {
 	errs = appendErr(errs, err)
 	cfg.DBMaxConns = int32(maxConns)
 
-	cfg.AdmissionLimit, err = intEnv("ADMISSION_LIMIT", 64, 1, 10000)
+	cfg.AdmissionLimit, err = intEnv("ADMISSION_LIMIT", 0, 0, 100000)
+	errs = appendErr(errs, err)
+
+	cfg.AdmissionWait, err = durationEnv("ADMISSION_WAIT", 10*time.Second)
 	errs = appendErr(errs, err)
 
 	cfg.PerUserLimit, err = intEnv("PER_USER_LIMIT", 4, 1, 100)

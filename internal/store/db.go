@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,6 +32,13 @@ func NewPool(ctx context.Context, c PoolConfig, log *slog.Logger) (*pgxpool.Pool
 	pc.HealthCheckPeriod = 30 * time.Second
 	pc.ConnConfig.ConnectTimeout = 5 * time.Second
 	pc.ConnConfig.RuntimeParams["application_name"] = "seat-reservation"
+	// Safety nets for every session, set after connect rather than as startup
+	// parameters so a pooler in front of Postgres does not reject them. The
+	// reserve transaction sets tighter limits of its own with SET LOCAL.
+	pc.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET statement_timeout = '10s'; SET idle_in_transaction_session_timeout = '15s'")
+		return err
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {

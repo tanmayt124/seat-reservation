@@ -5,6 +5,7 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -26,6 +27,9 @@ type Deps struct {
 	Ready ReadyFunc
 	// Metrics backs /metrics and the outcome counters. Nil disables both.
 	Metrics *metrics.Metrics
+	// AdmissionLimit caps in-flight reserve/cancel requests; 0 disables it.
+	AdmissionLimit int
+	AdmissionWait  time.Duration
 }
 
 type handlers struct {
@@ -81,10 +85,13 @@ func NewRouter(d Deps) http.Handler {
 			r.Use(authenticate(d.Auth, d.Logger, false))
 
 			// Routes as named in the brief, plus earlier names kept as aliases.
-			r.Post("/shows/{showID}/reserve", h.createReservation)
-			r.Post("/shows/{showID}/reservations", h.createReservation)
-			r.Post("/reservations/{reservationID}/cancel", h.cancelReservation)
-			r.Delete("/reservations/{reservationID}", h.cancelReservation)
+			r.Group(func(r chi.Router) {
+				r.Use(admission(d.AdmissionLimit, d.AdmissionWait, d.Metrics))
+				r.Post("/shows/{showID}/reserve", h.createReservation)
+				r.Post("/shows/{showID}/reservations", h.createReservation)
+				r.Post("/reservations/{reservationID}/cancel", h.cancelReservation)
+				r.Delete("/reservations/{reservationID}", h.cancelReservation)
+			})
 
 			r.With(requireAdmin).Post("/shows", h.createShow)
 		})
@@ -93,9 +100,20 @@ func NewRouter(d Deps) http.Handler {
 	return r
 }
 
+// statusClientClosed is nginx's convention for "the client went away before
+// we answered". It is not a server error and must not count as a 5xx.
+const statusClientClosed = 499
+
 // internalError is for failures the client cannot fix. Contention and
-// overload are mapped to 4xx elsewhere (KAN-22) and never reach here.
+// overload are mapped to 4xx elsewhere and never reach here. If the request's
+// own context was cancelled (client disconnected, or a keep-alive connection
+// closed during shutdown) nobody is listening, so it is logged as 499.
 func (h *handlers) internalError(w http.ResponseWriter, r *http.Request, err error) {
+	if r.Context().Err() != nil {
+		h.log.Info("client_closed_request", "request_id", requestID(r), "path", r.URL.Path, "err", err)
+		w.WriteHeader(statusClientClosed)
+		return
+	}
 	h.log.Error("internal_error", "request_id", requestID(r), "path", r.URL.Path, "err", err)
 	writeError(w, r, http.StatusInternalServerError, "internal_error", "something went wrong", nil)
 }
