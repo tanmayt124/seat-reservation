@@ -39,5 +39,5 @@ lint: ## go vet + gofmt check
 fmt: ## Format code
 	gofmt -w .
 
-burst: ## Run the burst against BASE_URL (KAN-33)
-	@echo "burst script not implemented yet (KAN-33)"; exit 1
+burst: ## Burst + correctness checks against BASE_URL; exits non-zero on any failure or 5xx
+	go run ./cmd/burst -base-url $(BASE_URL) $(BURST_FLAGS)
