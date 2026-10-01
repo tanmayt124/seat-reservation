@@ -13,6 +13,8 @@ import (
 
 	"github.com/tanmayt124/seat-reservation/internal/config"
 	"github.com/tanmayt124/seat-reservation/internal/httpapi"
+	"github.com/tanmayt124/seat-reservation/internal/store"
+	"github.com/tanmayt124/seat-reservation/migrations"
 )
 
 func main() {
@@ -33,6 +35,20 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	pool, err := store.NewPool(ctx, store.PoolConfig{
+		URL:      cfg.DatabaseURL,
+		MaxConns: cfg.DBMaxConns,
+	}, logger)
+	if err != nil {
+		return err
+	}
+	// Closed last, after the HTTP server has drained in-flight requests.
+	defer pool.Close()
+
+	if err := store.Migrate(ctx, pool, migrations.FS, logger); err != nil {
+		return err
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
