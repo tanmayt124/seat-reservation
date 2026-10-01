@@ -53,7 +53,7 @@ func newTestAPI(t *testing.T) *testAPI {
 	}
 	logs := &syncBuffer{}
 	a := auth.New(testSecret)
-	svc := reserve.NewService(pool, 4, testutil.QuietLogger())
+	svc := reserve.NewService(pool, testutil.QuietLogger())
 	svc.SetAcquireTimeout(30 * time.Second)
 	return &testAPI{
 		t:    t,
@@ -168,7 +168,7 @@ func TestCreateShowExplicitLabels(t *testing.T) {
 	api := newTestAPI(t)
 	admin := api.token("admin1", auth.RoleAdmin)
 
-	rec := api.do("POST", "/shows", admin, map[string]any{"name": "Small", "seat_labels": []string{"vip-1", "VIP-2"}})
+	rec := api.do("POST", "/shows", admin, map[string]any{"name": "Small", "seats": []string{"vip-1", "VIP-2"}, "price_paise": 25000})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body)
 	}
@@ -188,12 +188,16 @@ func TestCreateShowValidation(t *testing.T) {
 		field string
 	}{
 		"missing name":    {map[string]any{"rows": 1, "seats_per_row": 1}, "name"},
-		"no layout":       {map[string]any{"name": "x"}, "seat_labels"},
-		"both layouts":    {map[string]any{"name": "x", "rows": 1, "seats_per_row": 1, "seat_labels": []string{"A1"}}, "seat_labels"},
+		"no layout":       {map[string]any{"name": "x"}, "seats"},
+		"both layouts":    {map[string]any{"name": "x", "rows": 1, "seats_per_row": 1, "seats": []string{"A1"}}, "seats"},
 		"too many rows":   {map[string]any{"name": "x", "rows": 27, "seats_per_row": 1}, "rows"},
 		"row too long":    {map[string]any{"name": "x", "rows": 1, "seats_per_row": 501}, "seats_per_row"},
-		"duplicate label": {map[string]any{"name": "x", "seat_labels": []string{"A1", "a1"}}, "seat_labels"},
-		"bad label":       {map[string]any{"name": "x", "seat_labels": []string{"A 1"}}, "seat_labels"},
+		"duplicate label": {map[string]any{"name": "x", "seats": []string{"A1", "a1"}}, "seats"},
+		"float price":     {map[string]any{"name": "x", "seats": []string{"A1"}, "price_paise": 250.5}, "price_paise"},
+		"string price":    {map[string]any{"name": "x", "seats": []string{"A1"}, "price_paise": "250"}, "price_paise"},
+		"negative price":  {map[string]any{"name": "x", "seats": []string{"A1"}, "price_paise": -1}, "price_paise"},
+		"bad limit":       {map[string]any{"name": "x", "seats": []string{"A1"}, "per_user_limit": 0}, "per_user_limit"},
+		"bad label":       {map[string]any{"name": "x", "seats": []string{"A 1"}}, "seats"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

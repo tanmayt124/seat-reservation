@@ -21,6 +21,9 @@ type Config struct {
 	PerUserLimit    int
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
+	// DBAcquireTimeout is how long a request waits for a pool connection
+	// before answering 429. Long on purpose: bursts queue rather than shed.
+	DBAcquireTimeout time.Duration
 	// EnableTokenEndpoint exposes POST /auth/token so the burst script can mint
 	// test tokens. It is a test helper and is off unless set explicitly.
 	EnableTokenEndpoint bool
@@ -56,6 +59,9 @@ func Load() (Config, error) {
 	errs = appendErr(errs, err)
 
 	cfg.ShutdownTimeout, err = durationEnv("SHUTDOWN_TIMEOUT", 20*time.Second)
+	errs = appendErr(errs, err)
+
+	cfg.DBAcquireTimeout, err = durationEnv("DB_ACQUIRE_TIMEOUT", 10*time.Second)
 	errs = appendErr(errs, err)
 
 	cfg.LogLevel, err = levelEnv("LOG_LEVEL", slog.LevelInfo)

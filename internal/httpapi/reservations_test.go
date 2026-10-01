@@ -14,7 +14,7 @@ import (
 
 func (api *testAPI) reserve(showID, token, key string, body any) *httptest.ResponseRecorder {
 	b, _ := json.Marshal(body)
-	req := httptest.NewRequest("POST", "/shows/"+showID+"/reservations", bytes.NewReader(b))
+	req := httptest.NewRequest("POST", "/shows/"+showID+"/reserve", bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer "+token)
 	if key != "" {
 		req.Header.Set("Idempotency-Key", key)
@@ -77,7 +77,8 @@ func TestReserveHTTPValidation(t *testing.T) {
 		"missing key":     {"", map[string]any{"seats": []string{"A1"}}, 400, "invalid_idempotency_key"},
 		"key with spaces": {"a b", map[string]any{"seats": []string{"A1"}}, 400, "invalid_idempotency_key"},
 		"no seats":        {"k", map[string]any{"seats": []string{}}, 422, "validation_failed"},
-		"too many seats":  {"k", map[string]any{"seats": []string{"A1", "A2", "A3", "A4", "A5"}}, 422, "validation_failed"},
+		"over the limit":  {"k3", map[string]any{"seats": []string{"A1", "A2", "A3", "A4", "A5"}}, 409, "per_user_limit_exceeded"},
+		"header vs body":  {"k4", map[string]any{"seats": []string{"A1"}, "idempotency_key": "other"}, 400, "invalid_idempotency_key"},
 		"duplicate seats": {"k", map[string]any{"seats": []string{"A1", "a1"}}, 422, "validation_failed"},
 		"unknown seat":    {"k2", map[string]any{"seats": []string{"Q1"}}, 422, "unknown_seats"},
 		"not json":        {"k", "nope", 400, "invalid_json"},
@@ -112,5 +113,67 @@ func TestReserveIgnoresAndLogsBodyUserID(t *testing.T) {
 	}
 	if logs := api.logs.String(); !strings.Contains(logs, `"msg":"spoof_attempt"`) || !strings.Contains(logs, `"source":"body"`) {
 		t.Fatalf("body spoof not logged: %s", logs)
+	}
+}
+
+// The exact request shapes from the brief: seats + price_paise on create,
+// idempotency_key in the body, POST /reserve, POST .../cancel, public GET.
+func TestBriefContract(t *testing.T) {
+	api := newTestAPI(t)
+	admin := api.token("admin1", auth.RoleAdmin)
+	alice := api.token("alice", auth.RoleUser)
+
+	rec := api.do("POST", "/shows", admin, map[string]any{
+		"name": "friday-night", "seats": []string{"A1", "A2", "A12", "A13"}, "price_paise": 25000,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	created := decode[store.ShowDetail](t, rec)
+	if created.PricePaise != 25000 || created.PerUserLimit != 4 || len(created.Seats) != 4 || created.Seats[0].Status != "available" {
+		t.Fatalf("create body: %+v", created)
+	}
+
+	rec = api.reserve(created.ID, alice, "", map[string]any{"seats": []string{"A12"}, "idempotency_key": "key-1"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("reserve with body key: %d %s", rec.Code, rec.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"reservation_id", "show_id", "user_id", "seats", "amount_paise", "status"} {
+		if _, ok := body[f]; !ok {
+			t.Fatalf("201 body missing %q: %s", f, rec.Body)
+		}
+	}
+	if body["user_id"] != "alice" || body["amount_paise"].(float64) != 25000 || body["status"] != "confirmed" {
+		t.Fatalf("201 body: %s", rec.Body)
+	}
+
+	// Same key in the header now: same request, so a replay.
+	rec = api.reserve(created.ID, alice, "key-1", map[string]any{"seats": []string{"A12"}})
+	if rec.Header().Get("Idempotent-Replay") != "true" {
+		t.Fatalf("header key did not replay the body key: %d %s", rec.Code, rec.Body)
+	}
+
+	// Public show state, no token.
+	rec = api.do("GET", "/shows/"+created.ID, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("anonymous GET: %d %s", rec.Code, rec.Body)
+	}
+	d := decode[store.ShowDetail](t, rec)
+	if d.Counts.Confirmed != 1 || !d.InvariantOK || d.Seats[2].Mine {
+		t.Fatalf("anonymous view: %+v", d.Counts)
+	}
+	// A present but bad token is still rejected.
+	if rec := api.do("GET", "/shows/"+created.ID, "garbage", nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token on GET: %d", rec.Code)
+	}
+
+	// Cancel as named in the brief.
+	rid := body["reservation_id"].(string)
+	if rec := api.do("POST", "/reservations/"+rid+"/cancel", alice, nil); rec.Code != http.StatusOK {
+		t.Fatalf("POST cancel: %d %s", rec.Code, rec.Body)
 	}
 }

@@ -16,6 +16,8 @@ import (
 	"github.com/tanmayt124/seat-reservation/migrations"
 )
 
+const testPrice int64 = 25000 // paise
+
 type fixture struct {
 	t      *testing.T
 	pool   *pgxpool.Pool
@@ -35,11 +37,11 @@ func newFixture(t *testing.T, seats, limit int) *fixture {
 	for i := range labels {
 		labels[i] = fmt.Sprintf("A%d", i+1)
 	}
-	show, err := store.NewShows(pool).Create(ctx, "test", nil, labels)
+	show, err := store.NewShows(pool).Create(ctx, store.NewShow{Name: "test", Labels: labels, PricePaise: testPrice, PerUserLimit: limit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(pool, limit, testutil.QuietLogger())
+	svc := NewService(pool, testutil.QuietLogger())
 	// Correctness tests assert exact counts, so a slow machine must not turn
 	// waits into 429s. Overload behaviour is covered by the burst script.
 	svc.SetAcquireTimeout(30 * time.Second)
@@ -115,7 +117,7 @@ func TestHotSeatHasExactlyOneWinner(t *testing.T) {
 		switch {
 		case o.Status == http.StatusCreated:
 			wins++
-		case o.Status == http.StatusConflict && (code(o) == "seat_unavailable" || code(o) == "seat_contended"):
+		case o.Status == http.StatusConflict && (code(o) == ReasonSeatTaken || code(o) == ReasonSeatContended):
 		default:
 			t.Fatalf("unexpected outcome %d %s", o.Status, o.Body)
 		}
@@ -251,7 +253,7 @@ func TestPerUserLimitUnderConcurrency(t *testing.T) {
 		switch {
 		case o.Status == http.StatusCreated:
 			wins++
-		case o.Status == http.StatusUnprocessableEntity && code(o) == "per_user_limit_exceeded":
+		case o.Status == http.StatusConflict && code(o) == ReasonPerUserLimit:
 			limited++
 		default:
 			t.Fatalf("unexpected outcome %d %s", o.Status, o.Body)
@@ -276,12 +278,12 @@ func TestPerUserLimitAcrossRequests(t *testing.T) {
 		t.Fatalf("first: %d %s", o.Status, o.Body)
 	}
 	o := f.reserve("alice", "k2", "A4", "A5")
-	if o.Status != http.StatusUnprocessableEntity || code(o) != "per_user_limit_exceeded" {
+	if o.Status != http.StatusConflict || code(o) != ReasonPerUserLimit {
 		t.Fatalf("second: %d %s", o.Status, o.Body)
 	}
 	// Rejections are not stored: the same key is re-evaluated, not replayed.
-	if again := f.reserve("alice", "k2", "A4", "A5"); again.Replayed || again.Status != http.StatusUnprocessableEntity {
-		t.Fatalf("retry of 422: %d replayed=%v", again.Status, again.Replayed)
+	if again := f.reserve("alice", "k2", "A4", "A5"); again.Replayed || again.Status != http.StatusConflict {
+		t.Fatalf("retry of limit decline: %d replayed=%v", again.Status, again.Replayed)
 	}
 	var keys int
 	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM idempotency_keys WHERE key = 'k2'").Scan(&keys); err != nil {
@@ -309,5 +311,39 @@ func TestUnknownSeatsAndShow(t *testing.T) {
 	}
 	if got := f.checkInvariant(); got != 0 {
 		t.Fatalf("confirmed seats = %d, want 0", got)
+	}
+}
+
+func TestAmountIsIntegerPaiseAndReplayed(t *testing.T) {
+	f := newFixture(t, 10, 4)
+
+	o := f.reserve("alice", "k1", "A1", "A2")
+	var c Confirmed
+	if err := json.Unmarshal(o.Body, &c); err != nil || o.Status != http.StatusCreated {
+		t.Fatalf("reserve: %d %s", o.Status, o.Body)
+	}
+	if c.AmountPaise != 2*testPrice || c.UserID != "alice" {
+		t.Fatalf("amount_paise=%d user_id=%q, want %d and alice", c.AmountPaise, c.UserID, 2*testPrice)
+	}
+	var stored int64
+	if err := f.pool.QueryRow(context.Background(), "SELECT amount_paise FROM reservations WHERE id = $1", c.ReservationID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 2*testPrice {
+		t.Fatalf("stored amount = %d", stored)
+	}
+	if again := f.reserve("alice", "k1", "A1", "A2"); !again.Replayed || string(again.Body) != string(o.Body) {
+		t.Fatalf("replay differs: %s", again.Body)
+	}
+}
+
+func TestRequestAboveLimitIsLimitDecline(t *testing.T) {
+	f := newFixture(t, 10, 2)
+	o := f.reserve("alice", "k1", "A1", "A2", "A3")
+	if o.Status != http.StatusConflict || code(o) != ReasonPerUserLimit {
+		t.Fatalf("3 seats on a limit-2 show: %d %s", o.Status, o.Body)
+	}
+	if got := f.checkInvariant(); got != 0 {
+		t.Fatalf("confirmed = %d, want 0", got)
 	}
 }

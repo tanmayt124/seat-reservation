@@ -23,7 +23,7 @@ func TestCancelHTTP(t *testing.T) {
 	rid := decode[reserve.Confirmed](t, rec).ReservationID
 
 	// Bob cannot cancel alice's reservation, and cannot tell it exists.
-	rec = api.do("DELETE", "/reservations/"+rid, bob, nil)
+	rec = api.do("POST", "/reservations/"+rid+"/cancel", bob, nil)
 	if rec.Code != http.StatusNotFound || decode[errorBody](t, rec).Error.Code != "reservation_not_found" {
 		t.Fatalf("non-owner: %d %s", rec.Code, rec.Body)
 	}
@@ -31,7 +31,7 @@ func TestCancelHTTP(t *testing.T) {
 		t.Fatal("cancel_denied not logged")
 	}
 
-	rec = api.do("DELETE", "/reservations/"+rid, alice, nil)
+	rec = api.do("POST", "/reservations/"+rid+"/cancel", alice, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("owner cancel: %d %s", rec.Code, rec.Body)
 	}

@@ -55,18 +55,22 @@ func run() error {
 		logger.Warn("POST /auth/token is enabled: test helper, anyone can mint tokens")
 	}
 
+	reserveSvc := reserve.NewService(pool, logger)
+	reserveSvc.SetAcquireTimeout(cfg.DBAcquireTimeout)
+
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: httpapi.NewRouter(httpapi.Deps{
 			Logger:              logger,
 			Auth:                auth.New(cfg.JWTSecret),
 			Shows:               store.NewShows(pool),
-			Reserve:             reserve.NewService(pool, cfg.PerUserLimit, logger),
+			Reserve:             reserveSvc,
 			EnableTokenEndpoint: cfg.EnableTokenEndpoint,
+			DefaultPerUserLimit: cfg.PerUserLimit,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout:      40 * time.Second, // above the worst-case queue wait (2 x DB_ACQUIRE_TIMEOUT)
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}

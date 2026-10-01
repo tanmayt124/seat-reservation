@@ -10,11 +10,17 @@ import (
 )
 
 // authenticate verifies the bearer token and stores the identity in the
-// request context. Every protected route sits behind it.
-func authenticate(a *auth.Authenticator, log *slog.Logger) func(http.Handler) http.Handler {
+// request context. Every protected route sits behind it. With optional set,
+// a request without a token passes through anonymously; a token that is
+// present must still be valid.
+func authenticate(a *auth.Authenticator, log *slog.Logger, optional bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw, ok := bearerToken(r)
+			if !ok && optional && r.Header.Get("Authorization") == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if !ok {
 				w.Header().Set("WWW-Authenticate", `Bearer`)
 				writeError(w, r, http.StatusUnauthorized, "missing_token", "Authorization: Bearer <token> is required", nil)

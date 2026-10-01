@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -25,8 +26,12 @@ func TestMigrateIsRepeatable(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("schema_migrations rows = %d, want 1", n)
+	files, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(files) {
+		t.Fatalf("schema_migrations rows = %d, want %d (one per file)", n, len(files))
 	}
 }
 

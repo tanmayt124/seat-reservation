@@ -19,20 +19,26 @@ type Deps struct {
 	Shows               *store.Shows
 	Reserve             *reserve.Service
 	EnableTokenEndpoint bool
+	// DefaultPerUserLimit applies to shows created without per_user_limit.
+	DefaultPerUserLimit int
 }
 
 type handlers struct {
-	log     *slog.Logger
-	auth    *auth.Authenticator
-	shows   *store.Shows
-	reserve *reserve.Service
+	log          *slog.Logger
+	auth         *auth.Authenticator
+	shows        *store.Shows
+	reserve      *reserve.Service
+	defaultLimit int
 }
 
 func NewRouter(d Deps) http.Handler {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	h := &handlers{log: d.Logger, auth: d.Auth, shows: d.Shows, reserve: d.Reserve}
+	if d.DefaultPerUserLimit <= 0 {
+		d.DefaultPerUserLimit = 4
+	}
+	h := &handlers{log: d.Logger, auth: d.Auth, shows: d.Shows, reserve: d.Reserve, defaultLimit: d.DefaultPerUserLimit}
 
 	r := chi.NewRouter()
 
@@ -54,11 +60,17 @@ func NewRouter(d Deps) http.Handler {
 	}
 
 	if d.Auth != nil {
-		r.Group(func(r chi.Router) {
-			r.Use(authenticate(d.Auth, d.Logger))
+		// Show state is public. A token is optional; with one, the caller's
+		// own seats are marked "mine".
+		r.With(authenticate(d.Auth, d.Logger, true)).Get("/shows/{showID}", h.getShow)
 
-			r.Get("/shows/{showID}", h.getShow)
+		r.Group(func(r chi.Router) {
+			r.Use(authenticate(d.Auth, d.Logger, false))
+
+			// Routes as named in the brief, plus earlier names kept as aliases.
+			r.Post("/shows/{showID}/reserve", h.createReservation)
 			r.Post("/shows/{showID}/reservations", h.createReservation)
+			r.Post("/reservations/{reservationID}/cancel", h.cancelReservation)
 			r.Delete("/reservations/{reservationID}", h.cancelReservation)
 
 			r.With(requireAdmin).Post("/shows", h.createShow)

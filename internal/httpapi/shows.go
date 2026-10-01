@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 )
 
 const (
+	maxPricePaise   = 1_000_000_000_00 // 1 crore rupees per seat, a sanity cap
 	maxSeatsPerShow = 10000
 	maxRows         = 26 // rows are lettered A..Z
 	maxSeatsPerRow  = 500
@@ -24,27 +27,36 @@ const (
 var seatLabelPattern = regexp.MustCompile(`^[A-Z0-9-]{1,16}$`)
 
 type createShowRequest struct {
-	Name        string     `json:"name"`
-	StartsAt    *time.Time `json:"starts_at"`
-	Rows        int        `json:"rows"`
-	SeatsPerRow int        `json:"seats_per_row"`
-	SeatLabels  []string   `json:"seat_labels"`
+	Name     string     `json:"name"`
+	StartsAt *time.Time `json:"starts_at"`
+	// Seats is the seat list, as in the brief: ["A1","A2",...].
+	Seats []string `json:"seats"`
+	// SeatLabels is accepted as an alias of Seats.
+	SeatLabels []string `json:"seat_labels"`
+	// Rows and SeatsPerRow generate A1..Z500 as a convenience.
+	Rows        int `json:"rows"`
+	SeatsPerRow int `json:"seats_per_row"`
+	// PricePaise is raw so a float or a string is a field error, not a
+	// silent truncation. Money is integer paise only.
+	PricePaise   json.RawMessage `json:"price_paise"`
+	PerUserLimit *int            `json:"per_user_limit"`
 }
 
-// createShow handles POST /shows (admin only). The seat map is given either
-// as rows x seats_per_row (labels A1..Z500) or as an explicit label list.
+// createShow handles POST /shows (admin only). The brief's shape is
+// {"name", "seats": [...], "price_paise"}; rows + seats_per_row is a
+// convenience for large halls. Returns the show with every seat available.
 func (h *handlers) createShow(w http.ResponseWriter, r *http.Request) {
 	var req createShowRequest
 	if !decodeJSON(w, r, &req, showsBodyLimit) {
 		return
 	}
 
-	labels, errs := validateCreateShow(&req)
+	in, errs := validateCreateShow(&req, h.defaultLimit)
 	if errs.write(w, r) {
 		return
 	}
 
-	show, err := h.shows.Create(r.Context(), req.Name, req.StartsAt, labels)
+	show, err := h.shows.Create(r.Context(), in)
 	if err != nil {
 		h.internalError(w, r, err)
 		return
@@ -53,28 +65,60 @@ func (h *handlers) createShow(w http.ResponseWriter, r *http.Request) {
 		"request_id", requestID(r),
 		"show_id", show.ID,
 		"total_seats", show.TotalSeats,
+		"price_paise", show.PricePaise,
+		"per_user_limit", show.PerUserLimit,
 		"admin_id", identity(r).UserID,
 	)
-	writeJSON(w, http.StatusCreated, show)
+
+	d := store.ShowDetail{
+		Show:        show,
+		Counts:      store.SeatCounts{Available: show.TotalSeats},
+		InvariantOK: true,
+		Seats:       make([]store.SeatView, len(in.Labels)),
+	}
+	for i, l := range in.Labels {
+		d.Seats[i] = store.SeatView{Label: l, Status: "available"}
+	}
+	store.SortLabels(d.Seats)
+	writeJSON(w, http.StatusCreated, d)
 }
 
-func validateCreateShow(req *createShowRequest) ([]string, fieldErrors) {
+func validateCreateShow(req *createShowRequest, defaultLimit int) (store.NewShow, fieldErrors) {
 	errs := fieldErrors{}
+	in := store.NewShow{StartsAt: req.StartsAt, PerUserLimit: defaultLimit}
 
-	req.Name = strings.TrimSpace(req.Name)
-	if n := len(req.Name); n == 0 || n > 200 {
+	in.Name = strings.TrimSpace(req.Name)
+	if n := len(in.Name); n == 0 || n > 200 {
 		errs.add("name", "required, at most 200 characters")
 	}
 
+	if len(req.PricePaise) > 0 && string(req.PricePaise) != "null" {
+		p, err := strconv.ParseInt(string(req.PricePaise), 10, 64)
+		if err != nil || p < 0 || p > maxPricePaise {
+			errs.add("price_paise", "must be a non-negative whole number of paise (no decimals, no quotes)")
+		}
+		in.PricePaise = p
+	}
+
+	if req.PerUserLimit != nil {
+		if *req.PerUserLimit < 1 || *req.PerUserLimit > 100 {
+			errs.add("per_user_limit", "must be between 1 and 100")
+		}
+		in.PerUserLimit = *req.PerUserLimit
+	}
+
+	explicit := req.Seats
+	if len(explicit) == 0 {
+		explicit = req.SeatLabels
+	}
 	grid := req.Rows != 0 || req.SeatsPerRow != 0
-	explicit := len(req.SeatLabels) > 0
 	switch {
-	case grid && explicit:
-		errs.add("seat_labels", "give either rows + seats_per_row or seat_labels, not both")
-		return nil, errs
-	case !grid && !explicit:
-		errs.add("seat_labels", "give either rows + seats_per_row or seat_labels")
-		return nil, errs
+	case grid && len(explicit) > 0:
+		errs.add("seats", "give either seats or rows + seats_per_row, not both")
+		return in, errs
+	case !grid && len(explicit) == 0:
+		errs.add("seats", "required: a list of seat labels, e.g. [\"A1\",\"A2\"]")
+		return in, errs
 	}
 
 	if grid {
@@ -85,26 +129,27 @@ func validateCreateShow(req *createShowRequest) ([]string, fieldErrors) {
 			errs.add("seats_per_row", fmt.Sprintf("must be between 1 and %d", maxSeatsPerRow))
 		}
 		if len(errs) > 0 {
-			return nil, errs
+			return in, errs
 		}
-		labels := make([]string, 0, req.Rows*req.SeatsPerRow)
+		in.Labels = make([]string, 0, req.Rows*req.SeatsPerRow)
 		for row := 0; row < req.Rows; row++ {
 			for n := 1; n <= req.SeatsPerRow; n++ {
-				labels = append(labels, fmt.Sprintf("%c%d", 'A'+row, n))
+				in.Labels = append(in.Labels, fmt.Sprintf("%c%d", 'A'+row, n))
 			}
 		}
-		return labels, errs
+		return in, errs
 	}
 
-	if len(req.SeatLabels) > maxSeatsPerShow {
-		errs.add("seat_labels", fmt.Sprintf("at most %d seats per show", maxSeatsPerShow))
-		return nil, errs
+	if len(explicit) > maxSeatsPerShow {
+		errs.add("seats", fmt.Sprintf("at most %d seats per show", maxSeatsPerShow))
+		return in, errs
 	}
-	labels, err := normalizeLabels(req.SeatLabels)
+	labels, err := normalizeLabels(explicit)
 	if err != nil {
-		errs.add("seat_labels", err.Error())
+		errs.add("seats", err.Error())
 	}
-	return labels, errs
+	in.Labels = labels
+	return in, errs
 }
 
 // normalizeLabels upper-cases labels so "a1" and "A1" are the same seat,

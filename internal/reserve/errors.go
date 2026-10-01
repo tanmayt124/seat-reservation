@@ -40,19 +40,19 @@ func isRetryable(err error) bool {
 func mapPgError(err error) (Outcome, bool) {
 	switch pgCode(err) {
 	case sqlLockNotAvailable, sqlDeadlockDetected, sqlSerializationFailure:
-		out := errorOutcome(http.StatusConflict, "seat_contended",
+		out := errorOutcome(http.StatusConflict, ReasonSeatContended,
 			"seats are being booked by someone else right now, try again", nil)
 		out.RetryAfter = time.Second
 		return out, true
 	case sqlQueryCanceled:
-		out := errorOutcome(http.StatusTooManyRequests, "busy_try_again",
+		out := errorOutcome(http.StatusTooManyRequests, ReasonBusy,
 			"the system is busy, try again shortly", nil)
 		out.RetryAfter = time.Second
 		return out, true
 	case sqlCheckViolation:
-		out := errorOutcome(http.StatusConflict, "seat_unavailable",
+		out := errorOutcome(http.StatusConflict, ReasonSeatTaken,
 			"seats are no longer available", nil)
-		out.Reason = "check_violation"
+		out.Reason = reasonCheckViolation
 		return out, true
 	}
 	return Outcome{}, false

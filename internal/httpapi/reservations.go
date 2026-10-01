@@ -9,25 +9,28 @@ import (
 	"github.com/tanmayt124/seat-reservation/internal/reserve"
 )
 
-const maxIdempotencyKeyLen = 128
+const (
+	maxIdempotencyKeyLen = 128
+	// maxSeatsPerRequest is a sanity cap on request size. The per-user limit
+	// is separate and per show: asking for more than the limit is a 409
+	// limit decline, not a validation error.
+	maxSeatsPerRequest = 50
+)
 
 type reserveRequest struct {
 	Seats []string `json:"seats"`
+	// IdempotencyKey may come in the body or in the Idempotency-Key header.
+	IdempotencyKey string `json:"idempotency_key"`
 	// UserID is never used for identity. It is read only so a mismatch with
 	// the token can be logged as a spoof attempt.
 	UserID string `json:"user_id"`
 }
 
-// createReservation handles POST /shows/{showID}/reservations.
+// createReservation handles POST /shows/{showID}/reserve (and the older
+// /reservations alias).
 func (h *handlers) createReservation(w http.ResponseWriter, r *http.Request) {
 	showID, ok := parseShowID(w, r)
 	if !ok {
-		return
-	}
-	key := r.Header.Get("Idempotency-Key")
-	if key == "" || len(key) > maxIdempotencyKeyLen || !printableASCII(key) {
-		writeError(w, r, http.StatusBadRequest, "invalid_idempotency_key",
-			fmt.Sprintf("Idempotency-Key header is required: 1-%d printable ASCII characters", maxIdempotencyKeyLen), nil)
 		return
 	}
 
@@ -38,10 +41,14 @@ func (h *handlers) createReservation(w http.ResponseWriter, r *http.Request) {
 	id := identity(r)
 	noteSpoof(h.log, r, id, body.UserID, "body")
 
+	key, ok := idempotencyKey(w, r, body.IdempotencyKey)
+	if !ok {
+		return
+	}
+
 	errs := fieldErrors{}
-	limit := h.reserve.Limit()
-	if n := len(body.Seats); n < 1 || n > limit {
-		errs.add("seats", fmt.Sprintf("give between 1 and %d seats", limit))
+	if n := len(body.Seats); n < 1 || n > maxSeatsPerRequest {
+		errs.add("seats", fmt.Sprintf("give between 1 and %d seats", maxSeatsPerRequest))
 	}
 	seats, err := normalizeLabels(body.Seats)
 	if err != nil {
@@ -89,6 +96,27 @@ func (h *handlers) createReservation(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(out.Status)
 	_, _ = w.Write(out.Body)
+}
+
+// idempotencyKey takes the key from the Idempotency-Key header or the
+// idempotency_key body field. Both may be sent, but they must agree.
+func idempotencyKey(w http.ResponseWriter, r *http.Request, fromBody string) (string, bool) {
+	fromHeader := r.Header.Get("Idempotency-Key")
+	key := fromHeader
+	if key == "" {
+		key = fromBody
+	}
+	switch {
+	case fromHeader != "" && fromBody != "" && fromHeader != fromBody:
+		writeError(w, r, http.StatusBadRequest, "invalid_idempotency_key",
+			"Idempotency-Key header and idempotency_key body field differ", nil)
+		return "", false
+	case key == "" || len(key) > maxIdempotencyKeyLen || !printableASCII(key):
+		writeError(w, r, http.StatusBadRequest, "invalid_idempotency_key",
+			fmt.Sprintf("an idempotency key is required (Idempotency-Key header or idempotency_key field): 1-%d printable ASCII characters", maxIdempotencyKeyLen), nil)
+		return "", false
+	}
+	return key, true
 }
 
 func printableASCII(s string) bool {

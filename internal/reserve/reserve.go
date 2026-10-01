@@ -20,14 +20,30 @@ import (
 )
 
 const (
-	defaultAcquireTimeout = 2 * time.Second
+	DefaultAcquireTimeout = 10 * time.Second
 	lockTimeout           = "3s"
 	statementTimeout      = "5s"
 )
 
 // ErrOverloaded means no database connection was free in time. The caller
-// should answer 429 so the client backs off.
+// answers 429. With the default wait this is a last resort, not a normal
+// outcome of a burst.
 var ErrOverloaded = errors.New("overloaded")
+
+// Outcome reasons. These are the error codes clients see and the reason
+// labels used in logs and metrics.
+const (
+	ReasonConfirmed      = "confirmed"
+	ReasonReplay         = "idempotent_replay"
+	ReasonSeatTaken      = "seat_taken"
+	ReasonPerUserLimit   = "per_user_limit_exceeded"
+	ReasonKeyReused      = "idempotency_key_reused"
+	ReasonSeatContended  = "seat_contended"
+	ReasonBusy           = "busy_try_again"
+	ReasonUnknownSeats   = "unknown_seats"
+	ReasonShowNotFound   = "show_not_found"
+	reasonCheckViolation = "check_violation"
+)
 
 type Request struct {
 	ShowID string
@@ -42,47 +58,51 @@ type Outcome struct {
 	Status   int
 	Body     []byte
 	Replayed bool
-	// Reason is a short label for logs and metrics, e.g. "confirmed",
-	// "seat_unavailable", "per_user_limit".
+	// Reason is the outcome label for logs and metrics (see Reason*).
 	Reason string
 	// RetryAfter, when set, is sent as the Retry-After header.
 	RetryAfter time.Duration
 }
 
 type Service struct {
-	pool  *pgxpool.Pool
-	limit int
-	log   *slog.Logger
-	// acquireTimeout bounds the wait for a pool connection. Past it the
-	// request is answered 429 instead of queueing further.
+	pool *pgxpool.Pool
+	log  *slog.Logger
+	// acquireTimeout bounds the wait for a pool connection. Bursts queue
+	// rather than shed: a hot-seat loser should get 409, not 429.
 	acquireTimeout time.Duration
 }
 
-func NewService(pool *pgxpool.Pool, perUserLimit int, log *slog.Logger) *Service {
-	return &Service{pool: pool, limit: perUserLimit, log: log, acquireTimeout: defaultAcquireTimeout}
+func NewService(pool *pgxpool.Pool, log *slog.Logger) *Service {
+	return &Service{pool: pool, log: log, acquireTimeout: DefaultAcquireTimeout}
 }
 
-// SetAcquireTimeout overrides the pool wait. Tests that assert exact counts
-// use a long one so a slow machine cannot turn a correctness test into a
-// load test.
+// SetAcquireTimeout overrides the pool wait.
 func (s *Service) SetAcquireTimeout(d time.Duration) { s.acquireTimeout = d }
-
-func (s *Service) Limit() int { return s.limit }
 
 // Confirmed is the 201 body.
 type Confirmed struct {
 	ReservationID string    `json:"reservation_id"`
 	ShowID        string    `json:"show_id"`
+	UserID        string    `json:"user_id"`
 	Seats         []string  `json:"seats"`
+	AmountPaise   int64     `json:"amount_paise"`
 	Status        string    `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// showTerms are the show's booking terms, read in the pre-check. They never
+// change after the show is created.
+type showTerms struct {
+	pricePaise int64
+	limit      int
+}
+
 // Reserve runs the whole flow:
 //
-//  1. Replay check (no locks): a key that already booked returns that booking.
-//  2. Fast pre-check (no locks): unknown seats -> 422, taken seats -> 409.
-//  3. Transaction: claim the key, per-user advisory lock + limit check,
+//  1. One round trip, no locks: the seats' current status, then the key.
+//     A key that already booked returns that booking (replay). Otherwise
+//     unknown seats -> 422, taken seats -> 409, over the limit -> 409.
+//  2. Transaction: claim the key, per-user advisory lock + limit check,
 //     lock seats in label order, guarded update, store the response, commit.
 //
 // Only successful bookings are stored against the key. A rejection rolls the
@@ -97,33 +117,21 @@ func (s *Service) Reserve(ctx context.Context, req Request) (Outcome, error) {
 	req.Seats = seats
 	hash := requestHash(req.ShowID, seats)
 
-	// The lock-free reads share one short deadline. Under burst, waiting
-	// longer for a pool connection only grows the queue; 429 is better.
 	pctx, cancel := context.WithTimeout(ctx, s.acquireTimeout+time.Second)
-	defer cancel()
-	if out, done, err := s.lookupKey(pctx, req, hash); err != nil || done {
-		return out, err
-	}
-	if out, done, err := s.precheck(pctx, req); err != nil || done {
-		if err == nil && out.Status != http.StatusNotFound {
-			// A duplicate of this request may have committed between the key
-			// lookup and the pre-check, making its own seats look taken.
-			// Check the key once more so the client gets the replay, not 409.
-			if replayed, ok, lerr := s.lookupKey(pctx, req, hash); lerr == nil && ok {
-				return replayed, nil
-			}
-		}
+	terms, out, done, err := s.precheck(pctx, req, hash)
+	cancel()
+	if err != nil || done {
 		return out, err
 	}
 
-	out, err := s.runTx(ctx, req, hash)
+	out, err = s.runTx(ctx, req, hash, terms)
 	if isRetryable(err) {
 		s.log.Warn("reserve_retry", "show_id", req.ShowID, "user_id", req.UserID, "err", err)
-		out, err = s.runTx(ctx, req, hash)
+		out, err = s.runTx(ctx, req, hash, terms)
 	}
 	if err != nil {
 		if mapped, ok := mapPgError(err); ok {
-			if mapped.Reason == "check_violation" {
+			if mapped.Reason == reasonCheckViolation {
 				s.log.Error("constraint_blocked_bad_write", "show_id", req.ShowID, "user_id", req.UserID, "err", err)
 			}
 			return mapped, nil
@@ -140,74 +148,89 @@ func requestHash(showID string, sortedSeats []string) []byte {
 	return h[:]
 }
 
-func (s *Service) lookupKey(ctx context.Context, req Request, hash []byte) (Outcome, bool, error) {
+// precheck reads the seats and then the key in one batch (one network round
+// trip). The order matters: if a duplicate of this request commits between
+// the two reads, the seats look taken but the key read, which runs after,
+// sees the committed booking, so the client gets the replay rather than 409.
+func (s *Service) precheck(ctx context.Context, req Request, hash []byte) (showTerms, Outcome, bool, error) {
 	var (
+		terms      showTerms
+		showFound  bool
+		found      = map[string]string{}
 		storedHash []byte
 		status     *int
 		body       []byte
+		keyFound   bool
 	)
-	err := s.pool.QueryRow(ctx, `
+
+	batch := &pgx.Batch{}
+	batch.Queue(`
+		SELECT s.price_paise, s.per_user_limit, st.label, st.status
+		FROM shows s
+		LEFT JOIN seats st ON st.show_id = s.id AND st.label = ANY($2)
+		WHERE s.id = $1`, req.ShowID, req.Seats).Query(func(rows pgx.Rows) error {
+		var label, st *string
+		_, err := pgx.ForEachRow(rows, []any{&terms.pricePaise, &terms.limit, &label, &st}, func() error {
+			showFound = true
+			if label != nil {
+				found[*label] = *st
+			}
+			return nil
+		})
+		return err
+	})
+	batch.Queue(`
 		SELECT request_hash, response_status, response_body::text
 		FROM idempotency_keys WHERE user_id = $1 AND key = $2`,
-		req.UserID, req.Key,
-	).Scan(&storedHash, &status, &body)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Outcome{}, false, nil
+		req.UserID, req.Key).QueryRow(func(row pgx.Row) error {
+		err := row.Scan(&storedHash, &status, &body)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		keyFound = err == nil
+		return err
+	})
+	if err := s.pool.SendBatch(ctx, batch).Close(); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.DeadlineExceeded) {
+			return terms, Outcome{}, false, ErrOverloaded
+		}
+		if mapped, ok := mapPgError(err); ok {
+			return terms, mapped, true, nil
+		}
+		return terms, Outcome{}, false, err
 	}
-	if err != nil {
-		return s.wrapAcquire(err)
+
+	if keyFound {
+		if out, ok := replay(storedHash, hash, status, body); ok {
+			return terms, out, true, nil
+		}
 	}
-	out, ok := replay(storedHash, hash, status, body)
-	return out, ok, nil
+	if !showFound {
+		return terms, errorOutcome(http.StatusNotFound, ReasonShowNotFound, "show not found", nil), true, nil
+	}
+	if out, bad := checkSeats(req.Seats, found); bad {
+		return terms, out, true, nil
+	}
+	if len(req.Seats) > terms.limit {
+		return terms, limitOutcome(terms.limit, 0, len(req.Seats)), true, nil
+	}
+	return terms, Outcome{}, false, nil
 }
 
 // replay turns a stored key row into an outcome. A row without a stored
 // status cannot be committed, so it is treated as not found.
 func replay(storedHash, hash []byte, status *int, body []byte) (Outcome, bool) {
 	if string(storedHash) != string(hash) {
-		return errorOutcome(http.StatusConflict, "idempotency_key_reused",
-			"this Idempotency-Key was already used with a different request", nil), true
+		return errorOutcome(http.StatusConflict, ReasonKeyReused,
+			"this idempotency key was already used with a different request", nil), true
 	}
 	if status == nil {
 		return Outcome{}, false
 	}
-	return Outcome{Status: *status, Body: body, Replayed: true, Reason: "replay"}, true
+	return Outcome{Status: *status, Body: body, Replayed: true, Reason: ReasonReplay}, true
 }
 
-func (s *Service) precheck(ctx context.Context, req Request) (Outcome, bool, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT label, status FROM seats WHERE show_id = $1 AND label = ANY($2)`,
-		req.ShowID, req.Seats)
-	if err != nil {
-		return s.wrapAcquire(err)
-	}
-	found := map[string]string{}
-	var label, status string
-	_, err = pgx.ForEachRow(rows, []any{&label, &status}, func() error {
-		found[label] = status
-		return nil
-	})
-	if err != nil {
-		return s.wrapAcquire(err)
-	}
-
-	if len(found) == 0 {
-		var exists bool
-		if err := s.pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM shows WHERE id = $1)", req.ShowID).Scan(&exists); err != nil {
-			return s.wrapAcquire(err)
-		}
-		if !exists {
-			return errorOutcome(http.StatusNotFound, "show_not_found", "show not found", nil), true, nil
-		}
-	}
-	if out, bad := checkSeats(req.Seats, found); bad {
-		out.Reason += "_precheck"
-		return out, true, nil
-	}
-	return Outcome{}, false, nil
-}
-
-// checkSeats reports unknown seats (422) first, then unavailable seats (409).
+// checkSeats reports unknown seats (422) first, then taken seats (409).
 func checkSeats(want []string, found map[string]string) (Outcome, bool) {
 	var unknown, taken []string
 	for _, l := range want {
@@ -220,14 +243,20 @@ func checkSeats(want []string, found map[string]string) (Outcome, bool) {
 		}
 	}
 	if len(unknown) > 0 {
-		return errorOutcome(http.StatusUnprocessableEntity, "unknown_seats",
+		return errorOutcome(http.StatusUnprocessableEntity, ReasonUnknownSeats,
 			"some seats do not exist in this show", map[string]any{"seats": unknown}), true
 	}
 	if len(taken) > 0 {
-		return errorOutcome(http.StatusConflict, "seat_unavailable",
-			"some seats are no longer available", map[string]any{"seats": taken}), true
+		return errorOutcome(http.StatusConflict, ReasonSeatTaken,
+			"some seats are already taken", map[string]any{"seats": taken}), true
 	}
 	return Outcome{}, false
+}
+
+func limitOutcome(limit, current, requested int) Outcome {
+	return errorOutcome(http.StatusConflict, ReasonPerUserLimit,
+		fmt.Sprintf("at most %d seats per user for this show", limit),
+		map[string]any{"limit": limit, "current": current, "requested": requested})
 }
 
 // rejection carries a 4xx outcome out of the transaction function so the
@@ -240,7 +269,7 @@ func (r rejection) Error() string { return "rejected: " + r.out.Reason }
 // insert; the caller replays its stored response.
 var errDuplicateInFlight = errors.New("duplicate key in flight")
 
-func (s *Service) runTx(ctx context.Context, req Request, hash []byte) (Outcome, error) {
+func (s *Service) runTx(ctx context.Context, req Request, hash []byte, terms showTerms) (Outcome, error) {
 	acqCtx, cancel := context.WithTimeout(ctx, s.acquireTimeout)
 	conn, err := s.pool.Acquire(acqCtx)
 	cancel()
@@ -255,7 +284,7 @@ func (s *Service) runTx(ctx context.Context, req Request, hash []byte) (Outcome,
 	var out Outcome
 	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		var err error
-		out, err = s.reserveInTx(ctx, tx, req, hash)
+		out, err = s.reserveInTx(ctx, tx, req, hash, terms)
 		return err
 	})
 	var rej rejection
@@ -286,7 +315,7 @@ func (s *Service) runTx(ctx context.Context, req Request, hash []byte) (Outcome,
 	return out, err
 }
 
-func (s *Service) reserveInTx(ctx context.Context, tx pgx.Tx, req Request, hash []byte) (Outcome, error) {
+func (s *Service) reserveInTx(ctx context.Context, tx pgx.Tx, req Request, hash []byte, terms showTerms) (Outcome, error) {
 	// One round trip; no arguments, so pgx sends both statements together.
 	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '"+lockTimeout+"'; SET LOCAL statement_timeout = '"+statementTimeout+"'"); err != nil {
 		return Outcome{}, err
@@ -318,10 +347,8 @@ func (s *Service) reserveInTx(ctx context.Context, tx pgx.Tx, req Request, hash 
 		req.ShowID, req.UserID).Scan(&held); err != nil {
 		return Outcome{}, err
 	}
-	if held+len(req.Seats) > s.limit {
-		return Outcome{}, rejection{errorOutcome(http.StatusUnprocessableEntity, "per_user_limit_exceeded",
-			fmt.Sprintf("at most %d seats per user for this show", s.limit),
-			map[string]any{"limit": s.limit, "current": held, "requested": len(req.Seats)})}
+	if held+len(req.Seats) > terms.limit {
+		return Outcome{}, rejection{limitOutcome(terms.limit, held, len(req.Seats))}
 	}
 
 	// Lock the requested seats in label order. Every transaction locks in the
@@ -346,12 +373,18 @@ func (s *Service) reserveInTx(ctx context.Context, tx pgx.Tx, req Request, hash 
 		return Outcome{}, rejection{out}
 	}
 
-	var c Confirmed
+	c := Confirmed{
+		ShowID:      req.ShowID,
+		UserID:      req.UserID,
+		Seats:       req.Seats,
+		AmountPaise: terms.pricePaise * int64(len(req.Seats)),
+		Status:      "confirmed",
+	}
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO reservations (show_id, user_id, seat_labels)
-		VALUES ($1, $2, $3)
+		INSERT INTO reservations (show_id, user_id, seat_labels, amount_paise)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at`,
-		req.ShowID, req.UserID, req.Seats).Scan(&c.ReservationID, &c.CreatedAt); err != nil {
+		req.ShowID, req.UserID, req.Seats, c.AmountPaise).Scan(&c.ReservationID, &c.CreatedAt); err != nil {
 		return Outcome{}, err
 	}
 
@@ -369,12 +402,11 @@ func (s *Service) reserveInTx(ctx context.Context, tx pgx.Tx, req Request, hash 
 		return Outcome{}, fmt.Errorf("guarded update changed %d rows, want %d", tag.RowsAffected(), len(req.Seats))
 	}
 
-	c.ShowID, c.Seats, c.Status = req.ShowID, req.Seats, "confirmed"
 	body, err := json.Marshal(c)
 	if err != nil {
 		return Outcome{}, err
 	}
-	return s.store(ctx, tx, req, Outcome{Status: http.StatusCreated, Body: body, Reason: "confirmed"})
+	return s.store(ctx, tx, req, Outcome{Status: http.StatusCreated, Body: body, Reason: ReasonConfirmed})
 }
 
 // store saves the outcome on the key row and returns the body as Postgres
@@ -392,16 +424,6 @@ func (s *Service) store(ctx context.Context, tx pgx.Tx, req Request, out Outcome
 	}
 	out.Body = stored
 	return out, nil
-}
-
-func (s *Service) wrapAcquire(err error) (Outcome, bool, error) {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return Outcome{}, false, ErrOverloaded
-	}
-	if mapped, ok := mapPgError(err); ok {
-		return mapped, true, nil
-	}
-	return Outcome{}, false, err
 }
 
 type errorEnvelope struct {

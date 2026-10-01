@@ -20,7 +20,9 @@ var (
 type Cancelled struct {
 	ReservationID string    `json:"reservation_id"`
 	ShowID        string    `json:"show_id"`
+	UserID        string    `json:"user_id"`
 	Seats         []string  `json:"seats"`
+	AmountPaise   int64     `json:"amount_paise"`
 	Status        string    `json:"status"`
 	CancelledAt   time.Time `json:"cancelled_at"`
 	// AlreadyCancelled is true when this call found the reservation already
@@ -56,10 +58,10 @@ func (s *Service) Cancel(ctx context.Context, reservationID, userID string) (Can
 			cancelledAt   *time.Time
 		)
 		err := tx.QueryRow(ctx, `
-			SELECT show_id, user_id, seat_labels, status, cancelled_at
+			SELECT show_id, user_id, seat_labels, amount_paise, status, cancelled_at
 			FROM reservations WHERE id = $1
 			FOR UPDATE`, reservationID,
-		).Scan(&c.ShowID, &owner, &c.Seats, &status, &cancelledAt)
+		).Scan(&c.ShowID, &owner, &c.Seats, &c.AmountPaise, &status, &cancelledAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrReservationNotFound
 		}
@@ -69,7 +71,7 @@ func (s *Service) Cancel(ctx context.Context, reservationID, userID string) (Can
 		if owner != userID {
 			return ErrNotOwner
 		}
-		c.ReservationID, c.Status = reservationID, "cancelled"
+		c.ReservationID, c.UserID, c.Status = reservationID, owner, "cancelled"
 
 		if status == "cancelled" {
 			c.AlreadyCancelled = true

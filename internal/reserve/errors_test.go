@@ -20,7 +20,7 @@ func TestMapPgError(t *testing.T) {
 		{sqlDeadlockDetected, http.StatusConflict, "seat_contended", true},
 		{sqlSerializationFailure, http.StatusConflict, "seat_contended", true},
 		{sqlQueryCanceled, http.StatusTooManyRequests, "busy_try_again", false},
-		{sqlCheckViolation, http.StatusConflict, "seat_unavailable", false},
+		{sqlCheckViolation, http.StatusConflict, "seat_taken", false},
 	}
 	for _, c := range cases {
 		t.Run(c.sqlstate, func(t *testing.T) {

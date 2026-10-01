@@ -16,11 +16,22 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type Show struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	StartsAt   *time.Time `json:"starts_at,omitempty"`
-	TotalSeats int        `json:"total_seats"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	StartsAt     *time.Time `json:"starts_at,omitempty"`
+	TotalSeats   int        `json:"total_seats"`
+	PricePaise   int64      `json:"price_paise"`
+	PerUserLimit int        `json:"per_user_limit"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
+// NewShow is what an admin supplies to create a show.
+type NewShow struct {
+	Name         string
+	StartsAt     *time.Time
+	Labels       []string
+	PricePaise   int64
+	PerUserLimit int
 }
 
 type SeatCounts struct {
@@ -54,15 +65,16 @@ func NewShows(pool *pgxpool.Pool) *Shows { return &Shows{pool: pool} }
 
 // Create inserts the show and all of its seats in one transaction, so a show
 // is never visible with only some of its seats.
-func (s *Shows) Create(ctx context.Context, name string, startsAt *time.Time, labels []string) (Show, error) {
+func (s *Shows) Create(ctx context.Context, in NewShow) (Show, error) {
 	var show Show
+	labels := in.Labels
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
-			INSERT INTO shows (name, starts_at, total_seats)
-			VALUES ($1, $2, $3)
-			RETURNING id, name, starts_at, total_seats, created_at`,
-			name, startsAt, len(labels),
-		).Scan(&show.ID, &show.Name, &show.StartsAt, &show.TotalSeats, &show.CreatedAt)
+			INSERT INTO shows (name, starts_at, total_seats, price_paise, per_user_limit)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING id, name, starts_at, total_seats, price_paise, per_user_limit, created_at`,
+			in.Name, in.StartsAt, len(labels), in.PricePaise, in.PerUserLimit,
+		).Scan(&show.ID, &show.Name, &show.StartsAt, &show.TotalSeats, &show.PricePaise, &show.PerUserLimit, &show.CreatedAt)
 		if err != nil {
 			return fmt.Errorf("insert show: %w", err)
 		}
@@ -92,9 +104,9 @@ func (s *Shows) Get(ctx context.Context, showID, viewerID string) (ShowDetail, e
 		AccessMode: pgx.ReadOnly,
 	}, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
-			SELECT id, name, starts_at, total_seats, created_at
+			SELECT id, name, starts_at, total_seats, price_paise, per_user_limit, created_at
 			FROM shows WHERE id = $1`, showID,
-		).Scan(&d.ID, &d.Name, &d.StartsAt, &d.TotalSeats, &d.CreatedAt)
+		).Scan(&d.ID, &d.Name, &d.StartsAt, &d.TotalSeats, &d.PricePaise, &d.PerUserLimit, &d.CreatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
