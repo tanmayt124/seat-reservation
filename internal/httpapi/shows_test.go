@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -193,7 +194,9 @@ func TestCreateShowValidation(t *testing.T) {
 		"no layout":       {map[string]any{"name": "x"}, "seats"},
 		"both layouts":    {map[string]any{"name": "x", "rows": 1, "seats_per_row": 1, "seats": []string{"A1"}}, "seats"},
 		"too many rows":   {map[string]any{"name": "x", "rows": 27, "seats_per_row": 1}, "rows"},
-		"row too long":    {map[string]any{"name": "x", "rows": 1, "seats_per_row": 501}, "seats_per_row"},
+		"row too long":    {map[string]any{"name": "x", "rows": 1, "seats_per_row": 5001}, "seats_per_row"},
+		"grid too big":    {map[string]any{"name": "x", "rows": 26, "seats_per_row": 4000}, "seats_per_row"},
+		"too many seats":  {map[string]any{"name": "x", "seats": manyLabels(maxSeatsPerShow + 1)}, "seats"},
 		"duplicate label": {map[string]any{"name": "x", "seats": []string{"A1", "a1"}}, "seats"},
 		"float price":     {map[string]any{"name": "x", "seats": []string{"A1"}, "price_paise": 250.5}, "price_paise"},
 		"string price":    {map[string]any{"name": "x", "seats": []string{"A1"}, "price_paise": "250"}, "price_paise"},
@@ -245,5 +248,70 @@ func TestSpoofedUserIDIsLoggedAndIgnored(t *testing.T) {
 	logs := api.logs.String()
 	if !strings.Contains(logs, `"msg":"spoof_attempt"`) || !strings.Contains(logs, `"claimed_user_id":"bob"`) {
 		t.Fatalf("spoof attempt not logged; logs: %s", logs)
+	}
+}
+
+// manyLabels returns n distinct labels: S1, S2, ... Sn.
+func manyLabels(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "S" + strconv.Itoa(i+1)
+	}
+	return out
+}
+
+// A show at the full cap: explicit labels, created through the API, then a
+// seat at the far end is booked and the counts still reconcile.
+func TestCreateShowAtSeatCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("creates 100,000 seat rows")
+	}
+	api := newTestAPI(t)
+	admin := api.token("admin1", auth.RoleAdmin)
+
+	start := time.Now()
+	rec := api.do("POST", "/shows", admin, map[string]any{
+		"name": "stadium", "seats": manyLabels(maxSeatsPerShow), "price_paise": 50000,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %.300s", rec.Code, rec.Body)
+	}
+	t.Logf("created %d seats in %s (response %d KB)", maxSeatsPerShow, time.Since(start).Round(time.Millisecond), rec.Body.Len()>>10)
+	show := decode[store.Show](t, rec)
+	if show.TotalSeats != maxSeatsPerShow {
+		t.Fatalf("total_seats = %d", show.TotalSeats)
+	}
+
+	last := "S" + strconv.Itoa(maxSeatsPerShow)
+	rec = api.do("POST", "/shows/"+show.ID+"/reserve", api.token("alice", auth.RoleUser),
+		map[string]any{"seats": []string{last}, "idempotency_key": "cap-1"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("reserve %s: %d %s", last, rec.Code, rec.Body)
+	}
+
+	start = time.Now()
+	d := decode[store.ShowDetail](t, api.do("GET", "/shows/"+show.ID, admin, nil))
+	t.Logf("read %d seats in %s", len(d.Seats), time.Since(start).Round(time.Millisecond))
+	if !d.InvariantOK || d.Counts.Confirmed != 1 || d.Counts.Available != maxSeatsPerShow-1 {
+		t.Fatalf("counts after booking: invariant=%v %+v", d.InvariantOK, d.Counts)
+	}
+	if d.Seats[len(d.Seats)-1].Label != last || d.Seats[len(d.Seats)-1].Status != "confirmed" {
+		t.Fatalf("last seat: %+v", d.Seats[len(d.Seats)-1])
+	}
+}
+
+// The grid shortcut reaches the cap too: 20 rows of 5,000.
+func TestCreateGridShowAtSeatCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("creates 100,000 seat rows")
+	}
+	api := newTestAPI(t)
+	rec := api.do("POST", "/shows", api.token("admin1", auth.RoleAdmin),
+		map[string]any{"name": "grid", "rows": 20, "seats_per_row": 5000})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %.300s", rec.Code, rec.Body)
+	}
+	if s := decode[store.Show](t, rec); s.TotalSeats != maxSeatsPerShow {
+		t.Fatalf("total_seats = %d", s.TotalSeats)
 	}
 }

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -27,8 +28,12 @@ func TestReadyCheck(t *testing.T) {
 	}
 
 	// A binary that ships a newer migration than the DB has is not ready.
-	newer := fstest.MapFS{}
-	for _, n := range []string{"0001_init.sql", "0002_money_and_limits.sql", "0003_future.sql"} {
+	newer := fstest.MapFS{"9999_future.sql": &fstest.MapFile{Data: []byte("--")}}
+	shipped, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range shipped {
 		newer[n] = &fstest.MapFile{Data: []byte("--")}
 	}
 	if err := ReadyCheck(pool, newer)(ctx); err == nil || !strings.Contains(err.Error(), "migrations_pending") {

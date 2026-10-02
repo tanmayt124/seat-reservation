@@ -18,10 +18,12 @@ import (
 
 const (
 	maxPricePaise   = 1_000_000_000_00 // 1 crore rupees per seat, a sanity cap
-	maxSeatsPerShow = 10000
-	maxRows         = 26 // rows are lettered A..Z
-	maxSeatsPerRow  = 500
-	showsBodyLimit  = 256 << 10 // room for 10,000 explicit labels
+	maxSeatsPerShow = 100_000          // same number as the CHECK in migration 0003
+	maxRows         = 26               // rows are lettered A..Z
+	maxSeatsPerRow  = 5000
+	// 100,000 labels of up to 16 characters, quoted and comma separated, is
+	// about 1.9 MB. 4 MB leaves room for whitespace.
+	showsBodyLimit = 4 << 20
 )
 
 var seatLabelPattern = regexp.MustCompile(`^[A-Z0-9-]{1,16}$`)
@@ -127,6 +129,9 @@ func validateCreateShow(req *createShowRequest, defaultLimit int) (store.NewShow
 		}
 		if req.SeatsPerRow < 1 || req.SeatsPerRow > maxSeatsPerRow {
 			errs.add("seats_per_row", fmt.Sprintf("must be between 1 and %d", maxSeatsPerRow))
+		}
+		if len(errs) == 0 && req.Rows*req.SeatsPerRow > maxSeatsPerShow {
+			errs.add("seats_per_row", fmt.Sprintf("rows x seats_per_row must be at most %d", maxSeatsPerShow))
 		}
 		if len(errs) > 0 {
 			return in, errs

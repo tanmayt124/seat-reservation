@@ -72,10 +72,18 @@ func main() {
 		perUserLimit(c, cfg, admin),
 		cancelAndSpoof(c, cfg, admin),
 	}
-	results = append(results, metricsCheck(c, before, metricsOK))
 	elapsed := time.Since(start)
+	after, afterOK := c.scrape()
+	metricsOK = metricsOK && afterOK
+	results = append(results, metricsCheck(c, before, after, metricsOK))
 
 	failed := report(c, results, elapsed)
+	failed = reconcile(c, before, after, metricsOK) || failed
+	if failed {
+		fmt.Println("\nRESULT: FAIL")
+	} else {
+		fmt.Println("\nRESULT: PASS (zero 5xx, all checks green, books balance)")
+	}
 	if failed {
 		os.Exit(1)
 	}
@@ -318,10 +326,9 @@ func cancelAndSpoof(c *client, cfg config, admin string) scenario {
 // deltas against the outcomes we counted, and the per-show seat gauges
 // against the API. Deltas are exact only when this run is the only traffic;
 // more than expected is reported, fewer is a failure (metrics missed events).
-func metricsCheck(c *client, before map[string]float64, ok bool) scenario {
+func metricsCheck(c *client, before, after map[string]float64, ok bool) scenario {
 	s := newScenario("Metrics reconcile with the API")
-	after, okAfter := c.scrape()
-	if !ok || !okAfter {
+	if !ok {
 		s.skipped = true
 		s.notes = append(s.notes, "skip /metrics not served")
 		return s
@@ -420,11 +427,76 @@ func report(c *client, results []scenario, elapsed time.Duration) (failed bool) 
 		fmt.Printf("FAIL: %d requests got no HTTP response (timeouts or connection errors)\n", st.transportErrors)
 		failed = true
 	}
-	if failed {
-		fmt.Println("\nRESULT: FAIL")
-	} else {
-		fmt.Println("\nRESULT: PASS (zero 5xx, all checks green)")
+	return failed
+}
+
+// reconcile is the closing block: it balances the books for every show this
+// run created. Seats in 201 responses minus seats released by cancel must
+// equal what the database says is confirmed, the money must add up, the
+// invariant must hold everywhere and the counters must agree.
+func reconcile(c *client, before, after map[string]float64, metricsOK bool) (failed bool) {
+	st := c.stats.snapshot()
+	booked, released, live, revenue := 0, 0, 0, int64(0)
+	for id, b := range st.bookings {
+		booked += b.seats
+		if _, gone := st.released[id]; gone {
+			continue
+		}
+		live++
+		revenue += b.amount
 	}
+	for _, n := range st.released {
+		released += n
+	}
+
+	dbConfirmed, invariantOK := 0, 0
+	for _, id := range c.shows {
+		d := c.mustShow("", id)
+		dbConfirmed += d.Counts.Confirmed
+		if d.InvariantOK && d.Counts.Available+d.Counts.Held+d.Counts.Confirmed == d.TotalSeats {
+			invariantOK++
+		}
+	}
+	fiveXX := 0
+	for code, n := range st.codes {
+		if code >= 500 {
+			fiveXX += n
+		}
+	}
+
+	line := func(ok bool, format string, args ...any) {
+		mark := "ok  "
+		if !ok {
+			mark, failed = "FAIL", true
+		}
+		fmt.Printf("  %s %s\n", mark, fmt.Sprintf(format, args...))
+	}
+	net := booked - released
+	fmt.Printf("\nReconciliation (%d shows created by this run)\n", len(c.shows))
+	fmt.Printf("  seats in 201 responses   %6d  (%d reservations, replays counted once)\n", booked, len(st.bookings))
+	fmt.Printf("  seats released by cancel %6d\n", released)
+	fmt.Printf("  net seats sold           %6d\n", net)
+	fmt.Printf("  confirmed in database    %6d  (sum of GET /shows counts)\n", dbConfirmed)
+	line(net == dbConfirmed, "net seats sold == confirmed in database (%d == %d)", net, dbConfirmed)
+	want := int64(dbConfirmed) * c.cfg.price
+	line(revenue == want, "amount_paise of %d live reservations == confirmed seats x price (%d == %d x %d)", live, revenue, dbConfirmed, c.cfg.price)
+	line(invariantOK == len(c.shows), "available + held + confirmed == total_seats on %d/%d shows", invariantOK, len(c.shows))
+	if metricsOK {
+		for _, m := range []struct {
+			name string
+			want int
+		}{{"seats_confirmed_total", booked}, {"seats_released_total", released}} {
+			delta := int(after[m.name] - before[m.name])
+			note := ""
+			if delta > m.want {
+				note = " (other traffic on the server)"
+			}
+			line(delta >= m.want, "%s +%d, burst saw %d%s", m.name, delta, m.want, note)
+		}
+	} else {
+		fmt.Println("  skip /metrics not served")
+	}
+	line(fiveXX == 0, "5xx responses: %d", fiveXX)
 	return failed
 }
 
@@ -484,7 +556,9 @@ func newClient(cfg config) *client {
 		MaxConnsPerHost:     cfg.concurrency,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	return &client{cfg: cfg, http: &http.Client{Timeout: cfg.timeout, Transport: tr}, stats: &stats{codes: map[int]int{}, outcomes: map[string]int{}}}
+	return &client{cfg: cfg, http: &http.Client{Timeout: cfg.timeout, Transport: tr}, stats: &stats{
+		codes: map[int]int{}, outcomes: map[string]int{}, bookings: map[string]booking{}, released: map[string]int{},
+	}}
 }
 
 // do sends one request. Reservation and cancel calls are recorded in the
@@ -707,10 +781,18 @@ func errCode(body []byte) string {
 
 // ---------- stats ----------
 
+// booking is what a 201 said: how many seats and for how much.
+type booking struct {
+	seats  int
+	amount int64
+}
+
 type stats struct {
 	mu              sync.Mutex
 	codes           map[int]int
 	outcomes        map[string]int
+	bookings        map[string]booking // reservation_id -> booking, from 201s
+	released        map[string]int     // reservation_id -> seats, from cancel 200s
 	lat             []time.Duration
 	transportErrors int
 	retries         int
@@ -726,6 +808,26 @@ func (s *stats) add(r result, lat time.Duration) {
 	s.codes[r.status]++
 	s.outcomes[outcome(r)]++
 	s.lat = append(s.lat, lat)
+
+	if r.status != http.StatusCreated && r.status != http.StatusOK {
+		return
+	}
+	var body struct {
+		ReservationID string   `json:"reservation_id"`
+		Seats         []string `json:"seats"`
+		AmountPaise   int64    `json:"amount_paise"`
+		Status        string   `json:"status"`
+	}
+	if json.Unmarshal(r.body, &body) != nil || body.ReservationID == "" {
+		return
+	}
+	// Keyed by reservation id, so a replay or a repeated cancel counts once.
+	switch {
+	case r.status == http.StatusCreated:
+		s.bookings[body.ReservationID] = booking{seats: len(body.Seats), amount: body.AmountPaise}
+	case body.Status == "cancelled":
+		s.released[body.ReservationID] = len(body.Seats)
+	}
 }
 
 func (s *stats) retry() {
@@ -737,6 +839,8 @@ func (s *stats) retry() {
 type snapshot struct {
 	codes           map[int]int
 	outcomes        map[string]int
+	bookings        map[string]booking
+	released        map[string]int
 	lat             []time.Duration
 	total           int
 	transportErrors int
@@ -758,7 +862,15 @@ func (s *stats) snapshot() snapshot {
 	for k, v := range s.outcomes {
 		outcomes[k] = v
 	}
-	return snapshot{codes: codes, outcomes: outcomes, lat: lat, total: total, transportErrors: s.transportErrors, retries: s.retries}
+	bookings := make(map[string]booking, len(s.bookings))
+	for k, v := range s.bookings {
+		bookings[k] = v
+	}
+	released := make(map[string]int, len(s.released))
+	for k, v := range s.released {
+		released[k] = v
+	}
+	return snapshot{codes: codes, outcomes: outcomes, bookings: bookings, released: released, lat: lat, total: total, transportErrors: s.transportErrors, retries: s.retries}
 }
 
 func (s snapshot) p(q float64) time.Duration {

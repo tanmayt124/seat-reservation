@@ -49,6 +49,8 @@ curl -s localhost:8080/shows/$SHOW | jq .counts
 make burst BASE_URL=<BASE_URL>    # same thing
 ```
 
+The script uses Go if it is installed. Without Go it runs the same program inside the `golang:1.23-alpine` image, so Docker alone is enough (`BURST_DOCKER=1 ./burst.sh <BASE_URL>` forces this). For a `localhost` URL it uses host networking on Linux and `host.docker.internal` on macOS and Windows.
+
 It creates fresh shows, then runs about 20,000 requests:
 
 | Scenario | What must hold |
@@ -60,7 +62,7 @@ It creates fresh shows, then runs about 20,000 requests:
 | Identity, cancel, rebook | another user's cancel is 404; body `user_id` ignored; double cancel is safe; freed seats rebook |
 | Metrics reconcile | counter deltas equal what the burst saw; seat gauges equal `GET /shows` |
 
-It prints the outcome distribution (confirmed / declined by reason / 5xx), latency percentiles and the reconciliation, and exits non-zero if any check fails or any 5xx is seen. Flags: `./burst.sh <URL> -concurrency 500 -stampede 17000 -users 4000`.
+It prints the outcome distribution (confirmed / declined by reason / 5xx) and latency percentiles. It ends with a reconciliation block: seats in 201 responses minus seats released by cancel must equal the confirmed count in the database, the money must equal confirmed seats × price, the invariant must hold on every show, and the seat counters must match. It exits non-zero if any check fails or any 5xx is seen. Flags: `./burst.sh <URL> -concurrency 500 -stampede 17000 -users 4000`.
 
 The server must run with `ENABLE_TOKEN_ENDPOINT=true` so the script can mint tokens.
 
@@ -76,7 +78,7 @@ All bodies are JSON. Money is integer paise.
 
 | Method and path | Auth | Purpose |
 |---|---|---|
-| `POST /shows` | admin | Create a show: `{"name", "seats": [...], "price_paise", "per_user_limit"?}`. Returns the show with every seat `available`. |
+| `POST /shows` | admin | Create a show: `{"name", "seats": [...], "price_paise", "per_user_limit"?}`, up to 100,000 seats. Returns the show with every seat `available`. |
 | `GET /shows/{id}` | none (token optional) | Per-seat status, counts, `invariant_ok`. With a token, your seats are marked `mine`. |
 | `POST /shows/{id}/reserve` | user | `{"seats": [...], "idempotency_key": "..."}`. Key may also go in the `Idempotency-Key` header. |
 | `POST /reservations/{id}/cancel` | owner | Releases the seats. Anyone else gets 404. |
