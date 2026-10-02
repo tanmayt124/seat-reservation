@@ -2,11 +2,11 @@
 
 A small service that sells assigned seats for a show and stays correct when thousands of buyers hit the same seats at once. Built for the Paytm Money backend take-home ("Seat Reservation at Scale").
 
-- **Live URL:** `<LIVE_URL>`
-- **Dashboard:** `<LIVE_URL>/dashboard` (live view of the metrics; the root URL redirects here)
-- **Metrics:** `<LIVE_URL>/metrics`
-- **Logs:** `<LOGS_LINK_OR_RECORDING>`
-- **Design notes:** [WRITEUP.md](WRITEUP.md)
+- **Live URL:** https://seats.tanmaythakur.co.in (Railway; same service also at https://seat-reservation-production-f74c.up.railway.app)
+- **Dashboard:** https://seats.tanmaythakur.co.in/dashboard (live view of the metrics; the root URL redirects here)
+- **Metrics:** https://seats.tanmaythakur.co.in/metrics
+- **Logs:** Railway logs are not public. Screenshots from a live burst are in [docs/evidence](docs/evidence), see [live-logs-request-id.png](docs/evidence/live-logs-request-id.png).
+- **Design notes:** [WRITEUP.md](WRITEUP.md) · **How I used AI:** [docs/AI_USAGE.md](docs/AI_USAGE.md)
 
 Go 1.23, Postgres 16, chi, pgx. One database, no cache, no queue.
 
@@ -46,7 +46,7 @@ curl -s localhost:8080/shows/$SHOW | jq .counts
 ## One-command burst
 
 ```bash
-./burst.sh <BASE_URL>             # e.g. ./burst.sh http://localhost:8080
+./burst.sh <BASE_URL>             # e.g. ./burst.sh https://seats.tanmaythakur.co.in  or  http://localhost:8080
 make burst BASE_URL=<BASE_URL>    # same thing
 ```
 
@@ -67,11 +67,31 @@ It prints the outcome distribution (confirmed / declined by reason / 5xx) and la
 
 The server must run with `ENABLE_TOKEN_ENDPOINT=true` so the script can mint tokens.
 
-Sample output (local, `<DATE>`):
+Run against the live URL on 2 Oct 2026, from a laptop in Mumbai (end of the output; the full runs are in [docs/evidence](docs/evidence)):
 
 ```
-<PASTE ./burst.sh OUTPUT>
+Requests counted: 19552 in 1m0.811s
+Outcomes:         confirmed 771 | declined: idempotency_key_reused 1, idempotent_replay 24, per_user_limit_exceeded 17, reservation_not_found 1, seat_taken 18736 | 5xx 0
+Status codes:     200 x 2, 201 x 795, 404 x 1, 409 x 18754
+Latency:          p50 304ms  p95 494ms  p99 1.155s  max 1.181s
+429 retries:      0 (client honoured Retry-After)
+
+Reconciliation (5 shows created by this run)
+  seats in 201 responses     1008  (771 reservations, replays counted once)
+  seats released by cancel      2
+  net seats sold             1006
+  confirmed in database      1006  (sum of GET /shows counts)
+  ok   net seats sold == confirmed in database (1006 == 1006)
+  ok   amount_paise of 770 live reservations == confirmed seats x price (25150000 == 1006 x 25000)
+  ok   available + held + confirmed == total_seats on 5/5 shows
+  ok   seats_confirmed_total +1008, burst saw 1008
+  ok   seats_released_total +2, burst saw 2
+  ok   5xx responses: 0
+
+RESULT: PASS (zero 5xx, all checks green, books balance)
 ```
+
+`reservation_not_found 1` and the single 404 are the burst checking that another user's cancel is refused. Most of the latency here is the network round trip from Mumbai to Railway; the dashboard shows the server-side latency.
 
 ## API
 
@@ -101,7 +121,7 @@ Reserve outcomes:
 | 409 | `seat_contended` | Lock wait timed out; safe to retry. |
 | 422 | `unknown_seats` / `validation_failed` | Seats not in the show, or a malformed request. |
 | 400 / 401 / 404 | | Bad key or JSON, missing or bad token, unknown show. |
-| 429 | `overloaded` | Last resort only (no DB connection within 10s). |
+| 429 | `overloaded` | Last resort only: no DB connection within `DB_ACQUIRE_TIMEOUT` (10s by default, 30s on the live deploy). |
 
 **Partial requests are all-or-nothing.** If you ask for A12 and A13 and only one is free, you get 409 and nothing is booked.
 
@@ -112,10 +132,12 @@ Errors look like `{"error": {"code", "message", "request_id", "details"?}}`. A r
 ## Observability
 
 - **Dashboard:** open `/dashboard` (locally http://localhost:8080/dashboard) and run `./burst.sh` in another window. It polls `/metrics` every second and shows confirmed and declined counts, requests per second, reserve latency p50/p99, outcomes by reason, 5xx count, DB pool use, and a seat bar per show with its invariant. "Count from now" zeroes the tiles in your tab before a run. It is one HTML file embedded in the binary, loads nothing external, and its own polling is not counted in the request metrics.
-- **Logs:** JSON on stdout. Every line has `request_id`; send `X-Request-Id` to set it. One `http_request` line per request plus domain events: `reservation_confirmed`, `reservation_declined`, `idempotent_replay`, `reservation_cancelled`, `cancel_denied`, `spoof_attempt`.
+- **Logs:** JSON on stdout. Every line has `request_id`; send `X-Request-Id` to set it. One `http_request` line per request plus domain events: `reservation_confirmed`, `reservation_declined`, `idempotent_replay`, `reservation_cancelled`, `cancel_denied`, `spoof_attempt`. Known limit: Railway keeps at most 500 log lines per second per replica, and a full burst writes about 3,000, so Railway drops some lines during a burst. Metrics are exact regardless (see WRITEUP, section 5).
 - **Metrics:** `reservations_confirmed_total`, `reservations_declined_total{reason}` (`seat_taken`, `per_user_limit`, `idempotent_replay`, ...), `seats{show_id,status}` and `seats_invariant_ok{show_id}` read from the database at scrape time, HTTP latency by route, DB pool stats.
 
 ## Configuration
+
+Live deploy sets `DATABASE_URL`, `JWT_SECRET`, `ENABLE_TOKEN_ENDPOINT=true` and `DB_ACQUIRE_TIMEOUT=30s`; everything else is default.
 
 | Variable | Default | Purpose |
 |---|---|---|

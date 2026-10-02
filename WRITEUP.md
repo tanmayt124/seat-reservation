@@ -1,7 +1,5 @@
 # WRITEUP
 
-<!-- DRAFT. Rewrite in your own words before submitting. Fill every <...>. -->
-
 ## 1. The atomic decision
 
 The decision of who gets a seat lives in one Postgres transaction. Nothing outside it can change a seat.
@@ -29,6 +27,8 @@ There is no "is it free? then take it" step anywhere. The lock-free pre-check de
 - *Redis or an in-memory lock*: a second source of truth that can disagree with the database. One Postgres is enough at this scale and the brief encourages it.
 
 **Making losers cheap.** Before the transaction, one lock-free round trip reads the requested seats' status and the idempotency key. If a seat is already taken, the request is declined with 409 without opening a transaction. Once a hot seat is sold, almost all of the storm stops here.
+
+**When the database is the bottleneck.** A request that cannot get a pool connection waits instead of failing. Only after `DB_ACQUIRE_TIMEOUT` does it get 429 `overloaded`, and that is a 4xx, never a 5xx. A 429 on a hot seat would still break "everyone else gets 409", so the wait is long (10s by default, 30s on the live deploy, where the database is slower than my laptop) and the HTTP write deadline is derived from it, so raising the wait can never turn a slow answer into a dropped connection. A test holds every pool connection and checks both sides: a short wait gives 429, a wait long enough for a connection to free up gives the real 409.
 
 ## 2. Idempotency
 
@@ -74,26 +74,22 @@ Page if sustained:
 
 Never page: a spike in `seat_taken`. That is an on-sale working as intended.
 
-Every log line carries a `request_id` (from `X-Request-Id` or generated), and the same id is in the response header and every error body, so one booking can be traced from the client to the database outcome.
+Every log line carries a `request_id` (from `X-Request-Id` or generated), and the same id is in the response header and every error body, so one booking can be traced from the client to the database outcome. [docs/evidence/live-logs-request-id.png](docs/evidence/live-logs-request-id.png) shows this on the live deploy: a `reservation_confirmed` line and its `http_request` line share one id, and a `cancel_denied` warning (another user trying to cancel) and its 404 share another.
+
+To watch a burst there is a small page at `/dashboard`. It polls `/metrics` once a second and shows confirmations, declines by reason, requests per second, reserve latency, 5xx, pool use and one seat bar per show with its invariant. It only reads what `/metrics` already exposes, and its own polling is not counted in the request metrics.
+
+**What went wrong in the live run.** Railway keeps at most 500 log lines per second per replica. The service writes about two lines per request, so at roughly 1,600 requests per second Railway dropped about 23,000 lines during one burst and showed a warning saying so. The metrics were exact throughout (they are counters in the process and seat counts read from the database), and every burst reconciled. The fix I would make next is sampling: always log confirmations, cancels, spoof attempts, warnings and errors, and cap the routine lines (the thousands of identical `seat_taken` declines and their access lines) at a few per second per kind, with one summary line per second giving how many were skipped. I left it out on purpose to keep the submission small.
 
 ## 6. AI usage
 
-<!-- Write this yourself. Be specific and honest: they will ask you to extend the service live. Some prompts: -->
+I used Claude (an AI assistant) for most of the typing: turning the brief into a Jira plan, writing the Go code and tests, the burst script, the dashboard and first drafts of these documents. I directed the work one story at a time, ran every test and burst myself on my laptop and against the live URL, and made the calls on scope, order and trade-offs. Several of the most important fixes came from things I asked it to re-check, or from runs on my machine failing.
 
-**Directed (what I asked the AI to do):**
-- <e.g. turn Karan's mail into Jira epics and stories, then implement them one story at a time>
-- <e.g. write the code and tests for each story; I ran every test and burst on my own machine and pasted the output back>
-
-**Decided (what I decided or changed):**
-- <your decisions: scope, order, when to stop, which trade-offs you accepted and why>
-- <e.g. re-checking the build against the mail found the API did not match the brief's routes and fields; we aligned them>
-
-**What the tests caught, and how it was fixed:** the duplicate-key race in the pre-check; hot-seat losers timing out on a slow disk because declines were being committed; a shutdown race logged as 500; the burst script colliding with its own earlier runs.
-
-**What I verified by hand:** <list>
+The full account, phase by phase, with what I directed, what I decided, what the tests caught and what I verified by hand, is in [docs/AI_USAGE.md](docs/AI_USAGE.md).
 
 ## 7. What I would do next
 
+- Log sampling, as described in section 5, so a burst never exceeds the platform's log budget.
+- Replace the test token endpoint. `ENABLE_TOKEN_ENDPOINT=true` is on in the live deploy so reviewers can run their own burst, which also means anyone with the URL can get an admin token and create shows. In production tokens would come from the identity provider and this endpoint would not exist.
 - Expire idempotency keys after 24h (a cleanup job), and add a per-user rate limit.
 - Timed holds with a payment step, as described in section 3.
 - For much bigger on-sales: keep a per-show in-memory set of sold seats in front of the database so losers are declined without a query, partition seats by show, and put a queue in front of the hottest shows.
@@ -102,6 +98,16 @@ Every log line carries a `request_id` (from `X-Request-Id` or generated), and th
 
 ## Evidence
 
-- Local burst (laptop, Docker Postgres, `<DATE>`): about 19,500 requests, `confirmed 785 | seat_taken 18,721, per_user_limit_exceeded 18, idempotent_replay 24 | 5xx 0`; metrics reconciled exactly.
-- Live burst against `<LIVE_URL>`: `<PASTE>`.
-- Logs and metrics during the live run: `<LINK>`.
+All on 2 Oct 2026, against https://seats.tanmaythakur.co.in (Railway, one app instance, Railway Postgres), from my laptop in Mumbai, with the default burst (concurrency 500, 19,552 requests per run):
+
+| Run | Confirmed | Seat taken | Per-user limit | Replays | 5xx | 429 | Books (sold = in DB) |
+|---|---|---|---|---|---|---|---|
+| Live 1 | 771 | 18,736 | 17 | 24 | 0 | 0 | 1006 = 1006 |
+| Live 2 | 773 | 18,733 | 18 | 24 | 0 | 0 | 1009 = 1009 |
+
+In every hot-seat round of both runs (10 rounds, 500 users each) exactly one request got 201 and the other 499 got 409. The stampede peaked at about 1,600 reserve requests per second on the dashboard.
+
+- Full outputs: [docs/evidence/live-burst-1.txt](docs/evidence/live-burst-1.txt), [docs/evidence/live-burst-2.txt](docs/evidence/live-burst-2.txt)
+- Dashboard during and after run 2: [live-dashboard-peak.png](docs/evidence/live-dashboard-peak.png), [live-dashboard-final.png](docs/evidence/live-dashboard-final.png)
+- Railway logs during run 2: [live-logs-request-id.png](docs/evidence/live-logs-request-id.png)
+- Locally (laptop, Docker Postgres) the same burst also passes with zero 5xx, and `make test` runs the concurrency tests against real Postgres with the race detector on.
