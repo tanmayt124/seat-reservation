@@ -49,7 +49,9 @@ func main() {
 	flag.IntVar(&cfg.hotUsers, "hot-users", 500, "users racing per hot-seat round")
 	flag.IntVar(&cfg.limit, "limit", 4, "per-user seat limit set on the test shows")
 	flag.Int64Var(&cfg.price, "price-paise", 25000, "seat price set on the test shows, in paise")
-	flag.DurationVar(&cfg.timeout, "timeout", 30*time.Second, "per-request timeout")
+	// Above the server's longest possible answer (its write timeout), so the
+	// script never gives up on a request the server is still going to answer.
+	flag.DurationVar(&cfg.timeout, "timeout", 150*time.Second, "per-request timeout")
 	flag.Parse()
 	cfg.baseURL = strings.TrimRight(cfg.baseURL, "/")
 	cfg.run = fmt.Sprintf("r%06x", rand.Int63()&0xffffff)

@@ -28,6 +28,10 @@ type Config struct {
 	// DBAcquireTimeout is how long a request waits for a pool connection
 	// before answering 429. Long on purpose: bursts queue rather than shed.
 	DBAcquireTimeout time.Duration
+	// WriteTimeout is the HTTP server's write deadline, derived from
+	// DBAcquireTimeout so raising the queue wait never turns a slow answer
+	// into a dropped connection. See writeTimeoutFor.
+	WriteTimeout time.Duration
 	// EnableTokenEndpoint exposes POST /auth/token so the burst script can mint
 	// test tokens. It is a test helper and is off unless set explicitly.
 	EnableTokenEndpoint bool
@@ -70,6 +74,10 @@ func Load() (Config, error) {
 
 	cfg.DBAcquireTimeout, err = durationEnv("DB_ACQUIRE_TIMEOUT", 10*time.Second)
 	errs = appendErr(errs, err)
+	if err == nil && cfg.DBAcquireTimeout > maxAcquireTimeout {
+		errs = append(errs, fmt.Errorf("DB_ACQUIRE_TIMEOUT must be at most %s, got %s", maxAcquireTimeout, cfg.DBAcquireTimeout))
+	}
+	cfg.WriteTimeout = writeTimeoutFor(cfg.DBAcquireTimeout)
 
 	cfg.LogLevel, err = levelEnv("LOG_LEVEL", slog.LevelInfo)
 	errs = appendErr(errs, err)
@@ -78,6 +86,19 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid configuration: %w", errors.Join(errs...))
 	}
 	return cfg, nil
+}
+
+// maxAcquireTimeout keeps the derived write deadline under two and a half
+// minutes; a request queued longer than that is better answered with 429.
+const maxAcquireTimeout = 60 * time.Second
+
+// writeTimeoutFor returns the HTTP write deadline for a given pool wait. A
+// reservation can wait for a connection twice (the lock-free pre-check, then
+// the transaction) and then spend up to a few seconds in the transaction
+// (lock_timeout 3s, statement_timeout 5s), so the deadline is twice the wait
+// plus 20s of headroom, and never below the old fixed 40s.
+func writeTimeoutFor(acquire time.Duration) time.Duration {
+	return max(40*time.Second, 2*acquire+20*time.Second)
 }
 
 func getenv(key, def string) string {

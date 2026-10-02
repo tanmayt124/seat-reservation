@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadRequiresDatabaseAndSecret(t *testing.T) {
@@ -41,5 +42,37 @@ func TestLoadRejectsOutOfRange(t *testing.T) {
 
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PER_USER_LIMIT") {
 		t.Fatalf("expected PER_USER_LIMIT error, got %v", err)
+	}
+}
+
+func TestWriteTimeoutFollowsAcquireTimeout(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("JWT_SECRET", strings.Repeat("s", 32))
+
+	cases := map[string]time.Duration{
+		"":    40 * time.Second, // default 10s keeps the old 40s
+		"5s":  40 * time.Second, // never below 40s
+		"30s": 80 * time.Second, // 2 x 30s + 20s
+		"60s": 140 * time.Second,
+	}
+	for acquire, want := range cases {
+		t.Setenv("DB_ACQUIRE_TIMEOUT", acquire)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("DB_ACQUIRE_TIMEOUT=%q: %v", acquire, err)
+		}
+		if cfg.WriteTimeout != want {
+			t.Errorf("DB_ACQUIRE_TIMEOUT=%q: write timeout %s, want %s", acquire, cfg.WriteTimeout, want)
+		}
+		// Worst case for one reservation: two pool waits plus the
+		// transaction's own lock and statement limits.
+		if worst := 2*cfg.DBAcquireTimeout + 8*time.Second; cfg.WriteTimeout <= worst {
+			t.Errorf("DB_ACQUIRE_TIMEOUT=%q: write timeout %s does not cover worst case %s", acquire, cfg.WriteTimeout, worst)
+		}
+	}
+
+	t.Setenv("DB_ACQUIRE_TIMEOUT", "61s")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "DB_ACQUIRE_TIMEOUT") {
+		t.Fatalf("expected DB_ACQUIRE_TIMEOUT bound error, got %v", err)
 	}
 }

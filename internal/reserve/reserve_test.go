@@ -3,6 +3,7 @@ package reserve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -345,5 +346,57 @@ func TestRequestAboveLimitIsLimitDecline(t *testing.T) {
 	}
 	if got := f.checkInvariant(); got != 0 {
 		t.Fatalf("confirmed = %d, want 0", got)
+	}
+}
+
+// When every pool connection is busy, the acquire timeout decides the answer:
+// a wait shorter than the queue gives ErrOverloaded (429), a wait long enough
+// for a connection to free up gives the real domain answer (here 409). This is
+// the knob DB_ACQUIRE_TIMEOUT turns, and why a large burst on a slow database
+// can need it raised.
+func TestPoolWaitDecidesBetweenOverloadedAndARealAnswer(t *testing.T) {
+	f := newFixture(t, 2, 4)
+	if out := f.reserve("alice", "k-alice", "A1"); out.Status != http.StatusCreated {
+		t.Fatalf("setup booking: %d", out.Status)
+	}
+
+	ctx := context.Background()
+	var held []*pgxpool.Conn
+	for range f.pool.Stat().MaxConns() {
+		c, err := f.pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, c)
+	}
+	// The first connection is freed mid-test; the rest at the end.
+	first, rest := held[0], held[1:]
+	defer func() {
+		for _, c := range rest {
+			c.Release()
+		}
+	}()
+
+	f.svc.SetAcquireTimeout(200 * time.Millisecond)
+	_, err := f.svc.Reserve(ctx, Request{ShowID: f.showID, UserID: "bob", Key: "k-bob-1", Seats: []string{"A1"}})
+	if !errors.Is(err, ErrOverloaded) {
+		t.Fatalf("short wait with a full pool: got %v, want ErrOverloaded", err)
+	}
+
+	f.svc.SetAcquireTimeout(5 * time.Second)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		first.Release()
+	}()
+	start := time.Now()
+	out, err := f.svc.Reserve(ctx, Request{ShowID: f.showID, UserID: "bob", Key: "k-bob-2", Seats: []string{"A1"}})
+	if err != nil {
+		t.Fatalf("long wait: unexpected error %v", err)
+	}
+	if out.Status != http.StatusConflict || out.Reason != ReasonSeatTaken {
+		t.Fatalf("long wait: got %d %s, want 409 %s", out.Status, out.Reason, ReasonSeatTaken)
+	}
+	if waited := time.Since(start); waited < 400*time.Millisecond {
+		t.Fatalf("answered in %s; it should have queued for the freed connection", waited)
 	}
 }

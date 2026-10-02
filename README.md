@@ -123,7 +123,7 @@ Errors look like `{"error": {"code", "message", "request_id", "details"?}}`. A r
 | `JWT_SECRET` | required | HS256 secret, 32+ characters |
 | `PORT` | 8080 | HTTP port |
 | `DB_MAX_CONNS` | 16 | Pool size |
-| `DB_ACQUIRE_TIMEOUT` | 10s | Wait for a pool connection before 429 |
+| `DB_ACQUIRE_TIMEOUT` | 10s | Wait for a pool connection before 429 (max 60s). The HTTP write timeout follows it: 2 × this + 20s, at least 40s. Raise it if a large burst shows `overloaded` declines. |
 | `PER_USER_LIMIT` | 4 | Default limit for shows created without one |
 | `ADMISSION_LIMIT` | 0 (off) | Optional cap on in-flight writes |
 | `ENABLE_TOKEN_ENDPOINT` | false | Expose `POST /auth/token` (test helper) |

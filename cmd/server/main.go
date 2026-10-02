@@ -70,6 +70,10 @@ func run() error {
 
 	reserveSvc := reserve.NewService(pool, logger)
 	reserveSvc.SetAcquireTimeout(cfg.DBAcquireTimeout)
+	logger.Info("timeouts",
+		"db_acquire", cfg.DBAcquireTimeout.String(),
+		"http_write", cfg.WriteTimeout.String(),
+		"shutdown", cfg.ShutdownTimeout.String())
 
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
@@ -87,7 +91,7 @@ func run() error {
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      40 * time.Second, // above the worst-case queue wait (2 x DB_ACQUIRE_TIMEOUT)
+		WriteTimeout:      cfg.WriteTimeout, // follows DB_ACQUIRE_TIMEOUT, see config.writeTimeoutFor
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
