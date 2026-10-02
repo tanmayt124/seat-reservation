@@ -50,7 +50,7 @@ func requestID(r *http.Request) string {
 
 // quietPaths are probed constantly by the platform and scrapers; logging
 // them would bury the requests that matter.
-var quietPaths = map[string]bool{"/healthz": true, "/readyz": true, "/metrics": true}
+var quietPaths = map[string]bool{"/healthz": true, "/readyz": true, "/metrics": true, "/dashboard": true, "/": true}
 
 // accessLog writes one structured line per request after it completes and
 // records the HTTP metrics. Probes and scrapes are neither logged nor counted.

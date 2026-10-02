@@ -3,6 +3,7 @@
 A small service that sells assigned seats for a show and stays correct when thousands of buyers hit the same seats at once. Built for the Paytm Money backend take-home ("Seat Reservation at Scale").
 
 - **Live URL:** `<LIVE_URL>`
+- **Dashboard:** `<LIVE_URL>/dashboard` (live view of the metrics; the root URL redirects here)
 - **Metrics:** `<LIVE_URL>/metrics`
 - **Logs:** `<LOGS_LINK_OR_RECORDING>`
 - **Design notes:** [WRITEUP.md](WRITEUP.md)
@@ -86,6 +87,7 @@ All bodies are JSON. Money is integer paise.
 | `GET /healthz` | none | Liveness. |
 | `GET /readyz` | none | Readiness: DB reachable and migrations applied. 503 otherwise. |
 | `GET /metrics` | none | Prometheus metrics. |
+| `GET /dashboard` | none | Live dashboard drawn from `/metrics`. `GET /` redirects here. |
 
 Reserve outcomes:
 
@@ -109,6 +111,7 @@ Errors look like `{"error": {"code", "message", "request_id", "details"?}}`. A r
 
 ## Observability
 
+- **Dashboard:** open `/dashboard` (locally http://localhost:8080/dashboard) and run `./burst.sh` in another window. It polls `/metrics` every second and shows confirmed and declined counts, requests per second, reserve latency p50/p99, outcomes by reason, 5xx count, DB pool use, and a seat bar per show with its invariant. "Count from now" zeroes the tiles in your tab before a run. It is one HTML file embedded in the binary, loads nothing external, and its own polling is not counted in the request metrics.
 - **Logs:** JSON on stdout. Every line has `request_id`; send `X-Request-Id` to set it. One `http_request` line per request plus domain events: `reservation_confirmed`, `reservation_declined`, `idempotent_replay`, `reservation_cancelled`, `cancel_denied`, `spoof_attempt`.
 - **Metrics:** `reservations_confirmed_total`, `reservations_declined_total{reason}` (`seat_taken`, `per_user_limit`, `idempotent_replay`, ...), `seats{show_id,status}` and `seats_invariant_ok{show_id}` read from the database at scrape time, HTTP latency by route, DB pool stats.
 

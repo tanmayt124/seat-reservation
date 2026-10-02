@@ -70,6 +70,11 @@ func NewRouter(d Deps) http.Handler {
 	if d.Metrics != nil {
 		// Public on purpose: the brief asks for metrics access to watch the burst.
 		r.Method(http.MethodGet, "/metrics", d.Metrics.Handler())
+		// A live view of /metrics for people; the root URL lands there.
+		r.Get("/dashboard", serveDashboard)
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/dashboard", http.StatusFound)
+		})
 	}
 
 	if d.EnableTokenEndpoint && d.Auth != nil {

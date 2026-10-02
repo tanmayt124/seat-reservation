@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seat reservation · live</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --track: #ecebe6;
+    --s1: #2a78d6;
+    --s2: #eb6834;
+    --good: #0ca30c;
+    --good-ink: #006300;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --track: #2c2c2a;
+      --s1: #3987e5;
+      --s2: #d95926;
+      --good-ink: #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
+    --track: #2c2c2a; --s1: #3987e5; --s2: #d95926; --good-ink: #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 16px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  .sub { color: var(--ink-2); font-size: 13px; }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer;
+  }
+  button:hover { border-color: var(--axis); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+    padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .tile .label { color: var(--ink-2); font-size: 13px; }
+  .tile .value { font-size: 28px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
+  .tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .status svg { flex: none; }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+  .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+  .legend i { display: inline-block; width: 12px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: 180px; }
+  .chart text { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .chart .end { font-size: 11px; fill: var(--ink-2); }
+
+  .bars { display: grid; grid-template-columns: max-content 1fr max-content; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .bars .name { color: var(--ink-2); white-space: nowrap; }
+  .bars .num { font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); }
+  .bar-track { height: 10px; border-radius: 0 4px 4px 0; }
+  .bar-fill { height: 10px; background: var(--s1); border-radius: 0 4px 4px 0; min-width: 0; }
+  .bars .zero .name, .bars .zero .num { color: var(--muted); }
+
+  .meter { height: 10px; background: var(--track); border-radius: 4px; overflow: hidden; margin: 8px 0 6px; }
+  .meter > div { height: 100%; background: var(--s1); border-radius: 0 4px 4px 0; }
+  .kv { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--ink-2); }
+  .kv b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--grid); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  th.n { text-align: right; }
+  td code { font-size: 12px; color: var(--ink-2); }
+  .stack { display: flex; gap: 2px; height: 10px; min-width: 120px; }
+  .stack > span { height: 100%; }
+  .stack > span:last-child { border-radius: 0 4px 4px 0; }
+  .seg-c { background: var(--s1); }
+  .seg-h { background: var(--s2); }
+  .seg-a { background: var(--track); }
+  .table-wrap { overflow-x: auto; }
+  .flash { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { background: color-mix(in srgb, var(--s1) 14%, transparent); } to { background: transparent; } }
+
+  #tip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  #tip .t { color: var(--muted); margin-bottom: 4px; }
+  #tip i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .err { color: var(--critical); font-size: 13px; }
+  @media (max-width: 520px) { .tile .value { font-size: 24px; } .chart svg { height: 150px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Seat reservation · live</h1>
+    <span class="pill" id="ready"><span class="dot"></span><span>checking…</span></span>
+    <span class="sub" id="updated">waiting for first scrape</span>
+    <span class="spacer"></span>
+    <button id="baseline" title="Count from zero from now on. Only this browser tab is affected.">Count from now</button>
+    <button id="pause">Pause</button>
+  </header>
+
+  <section class="tiles">
+    <div class="card tile"><div class="label">Reservations confirmed</div><div class="value" id="t-conf">–</div><div class="note" id="t-conf-n"></div></div>
+    <div class="card tile"><div class="label">Seats sold</div><div class="value" id="t-seats">–</div><div class="note" id="t-seats-n"></div></div>
+    <div class="card tile"><div class="label">Requests declined</div><div class="value" id="t-decl">–</div><div class="note" id="t-decl-n"></div></div>
+    <div class="card tile"><div class="label">Reserve requests / s</div><div class="value" id="t-rps">–</div><div class="note" id="t-rps-n"></div></div>
+    <div class="card tile"><div class="label">Server errors (5xx)</div><div class="value" id="t-5xx">–</div><div class="note" id="t-5xx-n"></div></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Reserve traffic</h2>
+      <div class="desc">Requests per second, last 2 minutes</div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>All reserve requests</span><span><i style="background:var(--s2)"></i>Confirmed</span></div>
+      <div class="chart" id="c-rps"></div>
+    </div>
+    <div class="card">
+      <h2>Reserve latency</h2>
+      <div class="desc">Milliseconds, from the server's histogram, 5 s window</div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>p50</span><span><i style="background:var(--s2)"></i>p99</span></div>
+      <div class="chart" id="c-lat"></div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Outcomes</h2>
+      <div class="desc" id="o-desc">Every reserve request, by result</div>
+      <div class="bars" id="outcomes"></div>
+    </div>
+    <div class="card">
+      <h2>Database pool</h2>
+      <div class="desc">Connections in use right now</div>
+      <div class="meter" id="pool-meter"><div style="width:0"></div></div>
+      <div class="kv" id="pool-kv"></div>
+      <div class="desc" style="margin-top:14px">Waits happen when every connection is busy; requests queue instead of failing.</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Shows</h2>
+    <div class="desc">Seat counts read from the database on every scrape. The invariant is available + held + confirmed = total. Shows that changed recently are listed first.</div>
+    <div class="legend"><span><i style="background:var(--s1);height:8px"></i>Confirmed</span><span><i style="background:var(--s2);height:8px"></i>Held</span><span><i style="background:var(--track);height:8px"></i>Available</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Show</th><th style="width:40%">Seats</th><th class="n">Confirmed</th><th class="n">Available</th><th class="n">Total</th><th>Invariant</th></tr></thead>
+        <tbody id="shows"><tr><td colspan="6" class="sub">No shows yet.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="sub" id="shows-more" style="margin-top:6px"></div>
+  </section>
+</main>
+<div id="tip"></div>
+
+<script>
+"use strict";
+const POLL_MS = 1000, WINDOW = 120, LAT_WINDOW = 5;
+const RESERVE_ROUTES = ["/shows/{showID}/reserve", "/shows/{showID}/reservations"];
+const NAMED = [
+  ["confirmed", "Confirmed"],
+  ["seat_taken", "Seat taken"],
+  ["per_user_limit", "Per-user limit"],
+  ["idempotent_replay", "Idempotent replay"],
+  ["idempotency_key_reused", "Key reused"],
+  ["seat_contended", "Seat contended"],
+  ["overloaded", "Overloaded"],
+  ["unknown_seats", "Unknown seats"],
+  ["show_not_found", "Show not found"],
+  ["validation", "Validation"],
+  ["other", "Other"],
+];
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n == null || !isFinite(n) ? "–" : Math.round(n).toLocaleString("en-IN");
+const fmt1 = (n) => n == null || !isFinite(n) ? "–" : n === 0 ? "0" : (n >= 100 ? Math.round(n).toLocaleString("en-IN") : n.toFixed(1));
+const axisFmt = (v) => v >= 1000 ? +(v / 1000).toFixed(1) + "k" : Number.isInteger(v) ? String(v) : v.toFixed(1);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+let history = [];          // one sample per poll
+let baseline = null;       // counters at "Count from now"
+let paused = false;
+let lastChange = {};       // show_id -> time its counts last changed
+let lastCounts = {};
+let hover = {};            // chart id -> hovered index
+
+// ---------- Prometheus text parsing ----------
+function parse(text) {
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (!line || line[0] === "#") continue;
+    const m = line.match(/^([a-zA-Z_:][\w:]*)(\{(.*)\})?\s+(\S+)/);
+    if (!m) continue;
+    const labels = {};
+    if (m[3]) for (const p of m[3].matchAll(/(\w+)="((?:[^"\\]|\\.)*)"/g)) labels[p[1]] = p[2];
+    out.push({ name: m[1], labels, value: parseFloat(m[4]) });
+  }
+  return out;
+}
+
+function sample(series) {
+  const s = { t: Date.now(), reserve: 0, fivexx: 0, declined: {}, buckets: {}, shows: {}, pool: {}, scrapeError: 0 };
+  for (const { name, labels, value } of series) {
+    switch (name) {
+      case "reservations_confirmed_total": s.confirmed = value; break;
+      case "seats_confirmed_total": s.seats = value; break;
+      case "reservations_cancelled_total": s.cancelled = value; break;
+      case "seats_released_total": s.released = value; break;
+      case "reservations_declined_total": s.declined[labels.reason] = value; break;
+      case "http_requests_total":
+        if (labels.code && labels.code[0] === "5") s.fivexx += value;
+        if (labels.method === "POST" && RESERVE_ROUTES.includes(labels.route)) s.reserve += value;
+        break;
+      case "http_request_duration_seconds_bucket":
+        if (labels.method === "POST" && RESERVE_ROUTES.includes(labels.route)) {
+          const le = labels.le === "+Inf" ? Infinity : parseFloat(labels.le);
+          s.buckets[le] = (s.buckets[le] || 0) + value;
+        }
+        break;
+      case "seats": (s.shows[labels.show_id] ||= {})[labels.status] = value; break;
+      case "seats_total": (s.shows[labels.show_id] ||= {}).total = value; break;
+      case "seats_invariant_ok": (s.shows[labels.show_id] ||= {}).ok = value; break;
+      case "seats_scrape_error": s.scrapeError = value; break;
+      default:
+        if (name.startsWith("db_pool_")) s.pool[name.slice(8)] = value;
+    }
+  }
+  return s;
+}
+
+// A counter that went down means the server restarted: start over.
+function delta(a, b) { return b == null || a == null ? 0 : (b >= a ? b - a : b); }
+
+function quantile(q, from, to) {
+  const les = Object.keys(to.buckets).map(Number).sort((a, b) => a - b);
+  const d = les.map((le) => delta(from.buckets[le] || 0, to.buckets[le] || 0));
+  const total = d[d.length - 1];
+  if (!total) return null;
+  const rank = q * total;
+  let prevLe = 0, prevC = 0;
+  for (let i = 0; i < les.length; i++) {
+    if (d[i] >= rank) {
+      if (les[i] === Infinity) return prevLe * 1000;
+      const span = d[i] - prevC;
+      return (prevLe + (les[i] - prevLe) * (span ? (rank - prevC) / span : 1)) * 1000;
+    }
+    prevLe = les[i]; prevC = d[i];
+  }
+  return null;
+}
+
+// ---------- charts ----------
+// Round tick step (1, 2, 2.5 or 5 times a power of ten) giving about 4 ticks.
+function niceStep(raw) {
+  if (!(raw > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= raw) return m * p;
+  return 10 * p;
+}
+
+function lineChart(el, id, series, unit) {
+  const W = Math.max(280, el.clientWidth), H = el.clientWidth < 500 ? 150 : 180;
+  const L = 40, R = 64, T = 8, B = 20, pw = W - L - R, ph = H - T - B;
+  const n = WINDOW;
+  let max = 0;
+  for (const s of series) for (const v of s.values) if (v != null && v > max) max = v;
+  const step = niceStep((max * 1.1) / 4);
+  const ticks = Math.max(1, Math.ceil((max * 1.1) / step));
+  const ymax = step * ticks;
+  const x = (i) => L + (i / (n - 1)) * pw;
+  const y = (v) => T + ph - (v / ymax) * ph;
+  const off = n - series[0].values.length;
+
+  let g = "";
+  for (let k = 0; k <= ticks; k++) {
+    const v = step * k, yy = y(v).toFixed(1);
+    g += `<line x1="${L}" x2="${L + pw}" y1="${yy}" y2="${yy}" stroke="${k ? css("--grid") : css("--axis")}" stroke-width="1"/>`;
+    g += `<text x="${L - 6}" y="${+yy + 4}" text-anchor="end">${axisFmt(v)}</text>`;
+  }
+  for (const [i, lbl] of [[0, "-2 min"], [60, "-1 min"], [n - 1, "now"]])
+    g += `<text x="${x(i)}" y="${H - 4}" text-anchor="${i === 0 ? "start" : i === n - 1 ? "end" : "middle"}">${lbl}</text>`;
+
+  const ends = [];
+  for (const s of series) {
+    let d = "", pen = false;
+    s.values.forEach((v, i) => {
+      if (v == null) { pen = false; return; }
+      d += `${pen ? "L" : "M"}${x(i + off).toFixed(1)},${y(v).toFixed(1)}`; pen = true;
+    });
+    if (d) g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const lastI = s.values.length - 1, last = s.values[lastI];
+    if (last != null) {
+      g += `<circle cx="${x(lastI + off)}" cy="${y(last)}" r="4" fill="${s.color}" stroke="${css("--surface")}" stroke-width="2"/>`;
+      ends.push({ y: y(last), text: `${fmt1(last)} ${unit}` });
+    }
+  }
+  // Direct labels at the line ends, nudged apart if they collide.
+  ends.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 13) ends[i].y = ends[i - 1].y + 13;
+  for (const e of ends) g += `<text class="end" x="${L + pw + 8}" y="${e.y + 4}">${e.text}</text>`;
+
+  const h = hover[id];
+  if (h != null && h >= off) {
+    g += `<line x1="${x(h)}" x2="${x(h)}" y1="${T}" y2="${T + ph}" stroke="${css("--axis")}" stroke-width="1"/>`;
+    for (const s of series) {
+      const v = s.values[h - off];
+      if (v != null) g += `<circle cx="${x(h)}" cy="${y(v)}" r="4" fill="${s.color}" stroke="${css("--surface")}" stroke-width="2"/>`;
+    }
+  }
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(series.map((s) => s.name).join(" and "))}">${g}<rect x="${L}" y="${T}" width="${pw}" height="${ph}" fill="transparent"/></svg>`;
+  el._geom = { L, pw, n, off, series, unit };
+}
+
+function bindHover(el, id) {
+  el.addEventListener("mousemove", (ev) => {
+    const g = el._geom; if (!g) return;
+    const r = el.getBoundingClientRect();
+    const px = (ev.clientX - r.left) * (r.width ? (Math.max(280, el.clientWidth) / r.width) : 1);
+    const i = Math.round(((px - g.L) / g.pw) * (g.n - 1));
+    if (i < g.off || i > g.n - 1) { hideTip(); hover[id] = null; return; }
+    hover[id] = i;
+    const secs = g.n - 1 - i;
+    let html = `<div class="t">${secs ? secs + " s ago" : "now"}</div>`;
+    for (const s of g.series) html += `<div><i style="background:${s.color}"></i>${esc(s.name)}: <b>${fmt1(s.values[i - g.off])}</b> ${g.unit}</div>`;
+    showTip(html, ev.clientX, ev.clientY);
+    render();
+  });
+  el.addEventListener("mouseleave", () => { hover[id] = null; hideTip(); render(); });
+}
+
+function showTip(html, cx, cy) {
+  const t = $("tip"); t.innerHTML = html; t.style.display = "block";
+  const w = t.offsetWidth, h = t.offsetHeight;
+  t.style.left = Math.min(window.innerWidth - w - 8, cx + 14) + "px";
+  t.style.top = Math.max(8, cy - h - 10) + "px";
+}
+function hideTip() { $("tip").style.display = "none"; }
+
+// ---------- status pieces ----------
+const ICON_OK = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="7" fill="var(--good)"/><path d="M4 7.2l2 2 4-4.4" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_BAD = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="7" fill="var(--critical)"/><path d="M4.5 4.5l5 5M9.5 4.5l-5 5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>';
+const ICON_WARN = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1l6.5 12H.5z" fill="var(--serious)"/><path d="M7 5.5v3.2M7 10.6v.2" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const status = (ok, good, bad) => `<span class="status">${ok ? ICON_OK : ICON_BAD}<span>${ok ? good : bad}</span></span>`;
+
+// ---------- render ----------
+function render() {
+  if (!history.length) return;
+  const now = history[history.length - 1];
+  const prev = history.length > 1 ? history[history.length - 2] : null;
+  const base = baseline || { confirmed: 0, seats: 0, declined: {}, fivexx: 0, reserve: 0, cancelled: 0, released: 0 };
+  const since = (k) => delta(base[k] || 0, now[k] || 0);
+  const dt = prev ? (now.t - prev.t) / 1000 : 0;
+  const rate = (k) => (prev && dt > 0 ? delta(prev[k], now[k]) / dt : null);
+
+  const declinedNow = Object.values(now.declined).reduce((a, b) => a + b, 0);
+  const declinedBase = Object.values(base.declined || {}).reduce((a, b) => a + b, 0);
+  const declined = delta(declinedBase, declinedNow);
+
+  $("t-conf").textContent = fmt(since("confirmed"));
+  $("t-conf-n").textContent = rate("confirmed") != null ? `${fmt1(rate("confirmed"))} / s now · ${fmt(since("cancelled"))} cancelled` : "";
+  $("t-seats").textContent = fmt(since("seats") - since("released"));
+  $("t-seats-n").textContent = `${fmt(since("seats"))} booked, ${fmt(since("released"))} released`;
+  $("t-decl").textContent = fmt(declined);
+  const replays = delta((base.declined || {}).idempotent_replay || 0, now.declined.idempotent_replay || 0);
+  $("t-decl-n").textContent = `includes ${fmt(replays)} idempotent replays`;
+  $("t-rps").textContent = rate("reserve") != null ? fmt1(rate("reserve")) : "–";
+  $("t-rps-n").textContent = `${fmt(since("reserve"))} reserve requests in total`;
+  const fx = since("fivexx");
+  $("t-5xx").innerHTML = fx === 0 ? status(true, "0", "") : status(false, "", fmt(fx));
+  $("t-5xx").querySelector(".status").style.color = fx === 0 ? "var(--good-ink)" : "var(--critical)";
+  $("t-5xx-n").textContent = fx === 0 ? "none, the goal under burst" : "check the logs for internal_error";
+
+  // Rate and latency series over the window.
+  const rps = [], cps = [], p50 = [], p99 = [];
+  for (let i = 1; i < history.length; i++) {
+    const a = history[i - 1], b = history[i], s = (b.t - a.t) / 1000 || 1;
+    rps.push(delta(a.reserve, b.reserve) / s);
+    cps.push(delta(a.confirmed, b.confirmed) / s);
+    const from = history[Math.max(0, i - LAT_WINDOW)];
+    p50.push(quantile(0.5, from, b));
+    p99.push(quantile(0.99, from, b));
+  }
+  const tail = (a) => a.slice(-WINDOW);
+  lineChart($("c-rps"), "rps", [
+    { name: "All reserve requests", color: css("--s1"), values: tail(rps) },
+    { name: "Confirmed", color: css("--s2"), values: tail(cps) },
+  ], "/s");
+  lineChart($("c-lat"), "lat", [
+    { name: "p50", color: css("--s1"), values: tail(p50) },
+    { name: "p99", color: css("--s2"), values: tail(p99) },
+  ], "ms");
+
+  // Outcome distribution.
+  const counts = NAMED.map(([k, label]) => [k, label, k === "confirmed" ? since("confirmed")
+    : delta((base.declined || {})[k] || 0, now.declined[k] || 0)]);
+  const shown = counts.filter(([k, , v]) => v > 0 || ["confirmed", "seat_taken", "per_user_limit", "idempotent_replay"].includes(k));
+  const omax = Math.max(1, ...shown.map((c) => c[2]));
+  const total = counts.reduce((a, c) => a + c[2], 0);
+  $("o-desc").textContent = `Every reserve request, by result · ${fmt(total)} in total`;
+  $("outcomes").innerHTML = shown.map(([k, label, v]) => {
+    const pct = total ? ` (${(100 * v / total).toFixed(1)}%)` : "";
+    return `<span class="name${v ? "" : " zero"}">${label}</span>` +
+      `<div class="bar-track" data-tip="${esc(label)}: ${fmt(v)}${pct}"><div class="bar-fill" style="width:${(100 * v / omax).toFixed(2)}%"></div></div>` +
+      `<span class="num${v ? "" : " zero"}">${fmt(v)}</span>`;
+  }).join("");
+
+  // Pool.
+  const p = now.pool, used = p.acquired_conns || 0, max = p.max_conns || 1;
+  $("pool-meter").firstElementChild.style.width = `${Math.min(100, (100 * used) / max)}%`;
+  const waits = prev ? delta(prev.pool.empty_acquires_total, p.empty_acquires_total) / (dt || 1) : null;
+  $("pool-kv").innerHTML =
+    `<span>In use <b>${fmt(used)}</b> of ${fmt(max)}</span>` +
+    `<span>Idle <b>${fmt(p.idle_conns)}</b></span>` +
+    `<span>Waits <b>${fmt1(waits)}</b> / s</span>`;
+
+  // Shows.
+  const ids = Object.keys(now.shows);
+  for (const id of ids) {
+    const s = now.shows[id], key = `${s.confirmed}|${s.held}|${s.available}`;
+    if (lastCounts[id] !== key) { if (lastCounts[id] !== undefined) lastChange[id] = now.t; lastCounts[id] = key; }
+  }
+  ids.sort((a, b) => (lastChange[b] || 0) - (lastChange[a] || 0) || (now.shows[b].confirmed || 0) - (now.shows[a].confirmed || 0));
+  const LIMIT = 15;
+  if (now.scrapeError) {
+    $("shows").innerHTML = `<tr><td colspan="6"><span class="status">${ICON_WARN}<span>Seat counts could not be read on this scrape (seats_scrape_error = 1)</span></span></td></tr>`;
+  } else if (!ids.length) {
+    $("shows").innerHTML = `<tr><td colspan="6" class="sub">No shows yet. Create one with POST /shows, or run ./burst.sh.</td></tr>`;
+  } else {
+    $("shows").innerHTML = ids.slice(0, LIMIT).map((id) => {
+      const s = now.shows[id], t = s.total || 1;
+      const c = s.confirmed || 0, h = s.held || 0, a = s.available || 0;
+      const seg = (cls, v, name) => v ? `<span class="${cls}" style="flex:${v}" data-tip="${name}: ${fmt(v)} of ${fmt(t)}"></span>` : "";
+      const recent = lastChange[id] && now.t - lastChange[id] < 1500;
+      return `<tr${recent ? ' class="flash"' : ""}>` +
+        `<td><code title="${esc(id)}">${esc(id.slice(0, 8))}</code></td>` +
+        `<td><div class="stack">${seg("seg-c", c, "Confirmed")}${seg("seg-h", h, "Held")}${seg("seg-a", a, "Available")}</div></td>` +
+        `<td class="n">${fmt(c)}</td><td class="n">${fmt(a)}</td><td class="n">${fmt(s.total)}</td>` +
+        `<td>${status(s.ok === 1, "OK", "BROKEN")}</td></tr>`;
+    }).join("");
+  }
+  $("shows-more").textContent = ids.length > LIMIT ? `${ids.length - LIMIT} more shows not listed` : "";
+}
+
+// ---------- polling ----------
+async function poll() {
+  if (paused) return;
+  try {
+    const res = await fetch("metrics", { cache: "no-store" });
+    if (!res.ok) throw new Error(`/metrics answered ${res.status}`);
+    history.push(sample(parse(await res.text())));
+    if (history.length > WINDOW + LAT_WINDOW + 1) history.shift();
+    $("updated").textContent = `updated ${new Date().toLocaleTimeString()} · every ${POLL_MS / 1000} s`;
+    $("updated").className = "sub";
+    render();
+  } catch (e) {
+    $("updated").textContent = `cannot read /metrics: ${e.message}`;
+    $("updated").className = "err";
+  }
+}
+
+let readyTick = 0;
+async function checkReady() {
+  const pill = $("ready");
+  try {
+    const res = await fetch("readyz", { cache: "no-store" });
+    const ok = res.ok;
+    let reason = "";
+    if (!ok) { try { reason = (await res.json()).reason || ""; } catch (_) {} }
+    pill.innerHTML = `<span class="dot" style="background:var(${ok ? "--good" : "--critical"})"></span><span>${ok ? "Ready" : "Not ready" + (reason ? ": " + esc(reason) : "")}</span>`;
+  } catch (_) {
+    pill.innerHTML = `<span class="dot" style="background:var(--critical)"></span><span>Unreachable</span>`;
+  }
+}
+
+$("baseline").addEventListener("click", () => {
+  if (!history.length) return;
+  const n = history[history.length - 1];
+  baseline = { confirmed: n.confirmed, seats: n.seats, declined: { ...n.declined }, fivexx: n.fivexx, reserve: n.reserve, cancelled: n.cancelled, released: n.released };
+  $("baseline").textContent = "Counting from " + new Date().toLocaleTimeString();
+  render();
+});
+$("pause").addEventListener("click", () => {
+  paused = !paused;
+  $("pause").textContent = paused ? "Resume" : "Pause";
+});
+document.addEventListener("mouseover", (ev) => {
+  const el = ev.target.closest("[data-tip]");
+  if (el) showTip(esc(el.dataset.tip), ev.clientX, ev.clientY); else if (!ev.target.closest(".chart")) hideTip();
+});
+document.addEventListener("mousemove", (ev) => {
+  const el = ev.target.closest("[data-tip]");
+  if (el) showTip(esc(el.dataset.tip), ev.clientX, ev.clientY);
+});
+bindHover($("c-rps"), "rps");
+bindHover($("c-lat"), "lat");
+window.addEventListener("resize", render);
+
+poll(); checkReady();
+setInterval(poll, POLL_MS);
+setInterval(() => { if (!paused) checkReady(); }, 5000);
+</script>
+</body>
+</html>
