@@ -1,0 +1,60 @@
+burst run rccbd2e against https://seat-reservation-production-f74c.up.railway.app (concurrency 500)
+
+
+[PASS] Hot seat (500 users x 5 rounds)
+       ok   round 1 seat A1: 1 x 201, 499 x 409, other map[] (want exactly 1 and 499)
+       ok   round 2 seat A2: 1 x 201, 499 x 409, other map[] (want exactly 1 and 499)
+       ok   round 3 seat A3: 1 x 201, 499 x 409, other map[] (want exactly 1 and 499)
+       ok   round 4 seat A4: 1 x 201, 499 x 409, other map[] (want exactly 1 and 499)
+       ok   round 5 seat A5: 1 x 201, 499 x 409, other map[] (want exactly 1 and 499)
+       ok   show: 5 confirmed of 5, invariant_ok=true
+[PASS] Stampede (17000 requests, 4000 users)
+            17000 requests in 11.005s (1545 req/s), codes map[201:760 409:16240]
+       ok   no seat sold twice (995 seats sold, 0 doubles)
+       ok   no user above 4 seats (0 over)
+       ok   every 201 has amount_paise = 25000 x seats (0 wrong)
+       ok   invariant: 5 available + 0 held + 995 confirmed = 1000 total
+       ok   server confirmed 995 = seats in 201 responses 995
+[PASS] Idempotent retries
+       ok   all 25 attempts answered 201
+       ok   exactly one fresh booking, 24 replays (got 1 fresh)
+       ok   every response body is byte-identical
+       ok   same key, different seats -> 409 idempotency_key_reused
+       ok   show: 2 confirmed (want 2), invariant_ok=true
+[PASS] Per-user limit (4)
+       ok   20 parallel requests: 4 x 201, 16 x 409 per_user_limit_exceeded, other map[]
+       ok   show: 4 confirmed, invariant_ok=true
+[PASS] Identity, cancel and rebook
+       ok   alice books A1,A2 -> 201
+       ok   bob cancels alice's reservation -> 404 (want 404)
+       ok   A1,A2 still alice's after bob's attempt
+       ok   bob sends user_id=alice in body -> seat booked as bob (201)
+       ok   alice cancels -> 200, cancels again -> 200 with same body
+       ok   bob rebooks A1,A2 -> 201
+       ok   show: 3 confirmed (want 3), invariant_ok=true
+[PASS] Metrics reconcile with the API
+       ok   reservations_confirmed_total +773, burst saw 773
+       ok   reservations_declined_total{reason="seat_taken"} +18733, burst saw 18733
+       ok   reservations_declined_total{reason="per_user_limit"} +18, burst saw 18
+       ok   reservations_declined_total{reason="idempotent_replay"} +24, burst saw 24
+       ok   seat gauges match GET /shows and seats_invariant_ok=1 for all 5 shows of this run
+
+Requests counted: 19552 in 59.454s
+Outcomes:         confirmed 773 | declined: idempotency_key_reused 1, idempotent_replay 24, per_user_limit_exceeded 18, reservation_not_found 1, seat_taken 18733 | 5xx 0
+Status codes:     200 x 2, 201 x 797, 404 x 1, 409 x 18752
+Latency:          p50 302ms  p95 469ms  p99 1.929s  max 2.606s
+429 retries:      0 (client honoured Retry-After)
+
+Reconciliation (5 shows created by this run)
+  seats in 201 responses     1011  (773 reservations, replays counted once)
+  seats released by cancel      2
+  net seats sold             1009
+  confirmed in database      1009  (sum of GET /shows counts)
+  ok   net seats sold == confirmed in database (1009 == 1009)
+  ok   amount_paise of 772 live reservations == confirmed seats x price (25225000 == 1009 x 25000)
+  ok   available + held + confirmed == total_seats on 5/5 shows
+  ok   seats_confirmed_total +1011, burst saw 1011
+  ok   seats_released_total +2, burst saw 2
+  ok   5xx responses: 0
+
+RESULT: PASS (zero 5xx, all checks green, books balance)
