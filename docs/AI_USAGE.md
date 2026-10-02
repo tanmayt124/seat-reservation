@@ -16,7 +16,7 @@ I did not use any other AI tool for this assignment.
 
 The mail from Karan arrived on Thursday afternoon. I asked Claude to read it and break it into work I could track. I gave it a picture of the workflow I wanted and my Jira board, which already had a few dummy issues and my own workflow (To Do, In Progress, In Review, In Test, Done).
 
-What it produced, between 21:16 and 21:22: 9 epics (foundation, data model, reservation core, release flow, resilience, observability, deployment, verification, documentation) and 26 stories under them, written from the brief.
+What it produced, between 21:16 and 21:22: 9 epics (foundation, data model, reservation core, release flow, resilience, observability, deployment, verification, documentation) and 26 stories under them, written from the brief. A snapshot of the board, with when each ticket was opened and closed and which commit delivered it, is in [process/JIRA.md](process/JIRA.md).
 
 What I decided:
 - No assignees. I assign myself.
