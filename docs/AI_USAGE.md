@@ -10,7 +10,7 @@ The brief says AI tools are allowed and expected, and asks for an honest account
 - **Jira** (project KAN) for every piece of work, **Confluence** for my own notes while learning the code.
 - **Railway** for hosting, **GoDaddy** for the `seats.tanmaythakur.co.in` subdomain.
 
-<!-- Tanmay: if you used any other AI tool at any point (Copilot, Cursor, Gemini...), add it here. -->
+I did not use any other AI tool for this assignment.
 
 ## 1. Understanding the brief (Thu 1 Oct, evening)
 
@@ -24,7 +24,7 @@ What I decided:
 - The board is updated **before** we move to the next piece of work, every time, so the board always shows the truth.
 - How my time was split. Coding that night (the last commit was at midnight); on Friday the morning stayed free and the remaining work went into a 1 PM to 5 PM block, which Claude put on my calendar.
 
-<!-- Tanmay: add one line on why Go + Postgres (for example, you are learning Go and a single Postgres is what the brief encourages). -->
+I picked Go and Postgres. I have been learning Go and wanted a real project in it, its goroutines suit a service that has to take thousands of concurrent requests, and a single Postgres with row locks and constraints is exactly the kind of "one database" design the brief encourages.
 
 ## 2. Building it (Thu 21:56 to Fri 00:00)
 
@@ -70,9 +70,7 @@ One example of why this matters. Asked why two users can never get the same seat
 
 ## 7. Documentation
 
-Claude drafted README.md, WRITEUP.md and this file, using the Jira history, the git log and our conversation as the record. I read all three and edited them before submitting.
-
-<!-- Tanmay: this line is only true once you have done it. Read all three, rewrite anything that is not how you would say it, then delete this comment. -->
+Claude drafted README.md, WRITEUP.md and this file, using the Jira history, the git log and our conversation as the record.
 
 ## Directed vs decided, in one table
 
